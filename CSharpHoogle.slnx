@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/CSharpHoogle.Cli/CSharpHoogle.Cli.csproj" />
     <Project Path="src/CSharpHoogle.Core/CSharpHoogle.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
