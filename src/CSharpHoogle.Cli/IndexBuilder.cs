@@ -42,10 +42,12 @@ public static class IndexBuilder
             try
             {
                 var asm = loader.LoadFromAssemblyPath(dll);
+                var asmName = asm.GetName().Name ?? Path.GetFileNameWithoutExtension(dll);
+                var source = new MethodSource("assembly", asmName);
                 var methods = MethodIndexBuilder.BuildFromAssembly(asm, docs);
                 foreach (var m in methods)
                 {
-                    all.Add(Project(m));
+                    all.Add(Project(m, source));
                 }
                 assemblyCount++;
             }
@@ -59,12 +61,13 @@ public static class IndexBuilder
         return all;
     }
 
-    private static CachedMethod Project(MethodEntry m) => new(
+    private static CachedMethod Project(MethodEntry m, MethodSource source) => new(
         FullName: m.FullName,
         ReturnType: TypeNameFormatter.Format(m.ReturnType),
         ParameterTypes: Array.ConvertAll(m.ParameterTypes, TypeNameFormatter.Format),
         GenericParams: m.GenericParams,
         IsExtensionMethod: m.IsExtensionMethod,
         DocUrl: m.DocUrl,
-        Summary: m.Doc?.Summary);
+        Summary: m.Doc?.Summary,
+        Source: source);
 }

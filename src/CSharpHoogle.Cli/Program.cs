@@ -9,6 +9,7 @@ namespace CSharpHoogle.Cli;
 ///                                       signature match if the query contains "->"
 ///   csharp-hoogle --rebuild &lt;query&gt;   force a cache rebuild, then search
 ///   csharp-hoogle --rebuild             rebuild cache, print nothing else
+///   csharp-hoogle --list-assemblies     list assemblies in the cache with method counts
 ///   csharp-hoogle --help                show usage
 /// </summary>
 public static class Program
@@ -19,6 +20,7 @@ public static class Program
     {
         var rebuild = false;
         var showHelp = false;
+        var listAssemblies = false;
         var queryParts = new List<string>();
 
         foreach (var arg in args)
@@ -31,6 +33,9 @@ public static class Program
                     break;
                 case "--rebuild":
                     rebuild = true;
+                    break;
+                case "--list-assemblies":
+                    listAssemblies = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -53,6 +58,12 @@ public static class Program
         if (rebuild || !CacheStore.TryLoad(out methods))
         {
             methods = RebuildAndSave();
+        }
+
+        if (listAssemblies)
+        {
+            PrintAssemblyList(methods);
+            return 0;
         }
 
         if (queryParts.Count == 0)
@@ -141,14 +152,35 @@ public static class Program
         }
     }
 
+    private static void PrintAssemblyList(IReadOnlyList<CachedMethod> methods)
+    {
+        // Group by the full Source (Kind + Name) so a future source-file
+        // indexer shows up in the same listing without extra plumbing.
+        var groups = methods
+            .GroupBy(m => m.Source)
+            .OrderBy(g => g.Key.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Pad names so counts line up, but clamp to avoid pathological widths.
+        var nameWidth = Math.Min(60, groups.Max(g => g.Key.Name.Length));
+
+        foreach (var g in groups)
+        {
+            Console.WriteLine($"{g.Key.Name.PadRight(nameWidth)}  {g.Count(),7:N0} methods");
+        }
+        Console.WriteLine();
+        Console.WriteLine($"Total: {groups.Count:N0} sources, {methods.Count:N0} methods");
+    }
+
     private static void PrintUsage()
     {
-        Console.WriteLine("Usage: csharp-hoogle [--rebuild] <query>");
+        Console.WriteLine("Usage: csharp-hoogle [--rebuild] [--list-assemblies] <query>");
         Console.WriteLine();
-        Console.WriteLine("  <query>     If it contains \"->\", matched as a type signature");
-        Console.WriteLine("              (e.g. `IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>`).");
-        Console.WriteLine("              Otherwise, case-insensitive substring on the method's full name.");
-        Console.WriteLine("  --rebuild   Rebuild the on-disk cache before searching.");
-        Console.WriteLine("  --help      Show this message.");
+        Console.WriteLine("  <query>             If it contains \"->\", matched as a type signature");
+        Console.WriteLine("                      (e.g. `IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>`).");
+        Console.WriteLine("                      Otherwise, case-insensitive substring on the method's full name.");
+        Console.WriteLine("  --rebuild           Rebuild the on-disk cache before searching.");
+        Console.WriteLine("  --list-assemblies   List assemblies in the cache with method counts (no query).");
+        Console.WriteLine("  --help              Show this message.");
     }
 }

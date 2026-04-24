@@ -12,7 +12,7 @@ namespace CSharpHoogle.Cli;
 public static class CacheStore
 {
     private const string AppFolderName = "csharp-hoogle";
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
 
     private static readonly JsonSerializerOptions Json = new()
     {
