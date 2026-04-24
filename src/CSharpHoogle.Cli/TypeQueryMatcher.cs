@@ -4,16 +4,16 @@ namespace CSharpHoogle.Cli;
 /// Matches a parsed <see cref="SignatureQuery"/> against the type signature
 /// of a <see cref="CachedMethod"/>.
 ///
-/// v1 rules:
+/// Rules:
 /// <list type="bullet">
 ///   <item>Arity must match: the query's parameter count equals the method's.</item>
 ///   <item>C# keyword aliases match their BCL type names (<c>int</c> ↔ <c>Int32</c> etc.).</item>
-///   <item>Generic-parameter-like names on either side act as wildcards that match any type.</item>
+///   <item>Generic-parameter-like names on either side act as unification variables:
+///     repeated occurrences of the same variable must bind to the same type.
+///     So <c>T -&gt; T</c> matches <c>int -&gt; int</c> but not <c>int -&gt; string</c>,
+///     while <c>T -&gt; U</c> matches both.</item>
 ///   <item>Otherwise, simple names must match case-insensitively and generic args / array dims must match structurally.</item>
 /// </list>
-/// Unification is intentionally not performed — <c>T -&gt; T</c> and <c>T -&gt; U</c>
-/// both match <c>TSource -&gt; TResult</c>. That keeps the matcher cheap and is
-/// fine for a "find methods with roughly this shape" search.
 /// </summary>
 public static class TypeQueryMatcher
 {
@@ -47,38 +47,64 @@ public static class TypeQueryMatcher
         }
 
         var methodGenerics = method.GenericParams;
+        // Bindings are kept per-method so one method's signature is unified
+        // as a whole — variables carry their meaning across parameters and
+        // return type.
+        var bindings = new UnificationState();
 
         for (var i = 0; i < query.Parameters.Count; i++)
         {
             var methodType = SafeParse(method.ParameterTypes[i]);
-            if (methodType is null || !MatchType(query.Parameters[i], methodType, methodGenerics))
+            if (methodType is null || !MatchType(query.Parameters[i], methodType, methodGenerics, bindings))
             {
                 return false;
             }
         }
 
         var ret = SafeParse(method.ReturnType);
-        return ret is not null && MatchType(query.Return, ret, methodGenerics);
+        return ret is not null && MatchType(query.Return, ret, methodGenerics, bindings);
     }
 
-    private static bool MatchType(TypeRef query, TypeRef method, IReadOnlyList<string> methodGenerics)
+    private static bool MatchType(TypeRef query, TypeRef method, IReadOnlyList<string> methodGenerics, UnificationState bindings)
     {
-        // Query-side wildcard (a user-written `T`, `TSource`, etc.) matches
-        // any type name — but the array suffix still has to line up, so that
-        // `T -> T[]` doesn't match `int -> int`.
+        // Query-side wildcard (a user-written `T`, `TSource`, etc.) unifies
+        // with the method position. The array suffix still has to line up
+        // (so `T -> T[]` doesn't match `int -> int`); we strip those shared
+        // dims and bind T to the element type, so repeated Ts compare apples
+        // to apples.
         if (IsQueryWildcard(query.Name))
         {
-            return DimsEqual(query.ArrayDims, method.ArrayDims);
+            if (!DimsEqual(query.ArrayDims, method.ArrayDims))
+            {
+                return false;
+            }
+            var methodElement = method with { ArrayDims = Array.Empty<int>() };
+            if (bindings.Query.TryGetValue(query.Name, out var bound))
+            {
+                return TypeRefEquals(bound, methodElement);
+            }
+            bindings.Query[query.Name] = methodElement;
+            return true;
         }
 
         // Method-side wildcard (the method's own generic parameter) matches
         // only when the query hasn't asked for a specific shape. When the
         // user writes `Func<T, bool>` they want something function-shaped,
-        // not just "anything that could be substituted for TSource".
+        // not just "anything that could be substituted for TSource". Repeated
+        // occurrences of the same method variable must likewise unify.
         if (IsMethodWildcard(method.Name, methodGenerics))
         {
-            return query.Args.Count == 0
-                && DimsEqual(query.ArrayDims, method.ArrayDims);
+            if (query.Args.Count != 0 || !DimsEqual(query.ArrayDims, method.ArrayDims))
+            {
+                return false;
+            }
+            var queryElement = query with { ArrayDims = Array.Empty<int>() };
+            if (bindings.Method.TryGetValue(method.Name, out var bound))
+            {
+                return TypeRefEquals(bound, queryElement);
+            }
+            bindings.Method[method.Name] = queryElement;
+            return true;
         }
 
         if (!SimpleNameEquals(query.Name, method.Name))
@@ -93,13 +119,31 @@ public static class TypeQueryMatcher
 
         for (var i = 0; i < query.Args.Count; i++)
         {
-            if (!MatchType(query.Args[i], method.Args[i], methodGenerics))
+            if (!MatchType(query.Args[i], method.Args[i], methodGenerics, bindings))
             {
                 return false;
             }
         }
 
         return DimsEqual(query.ArrayDims, method.ArrayDims);
+    }
+
+    /// <summary>
+    /// Structural equality between two stored bindings. Uses
+    /// <see cref="SimpleNameEquals"/> so the BCL alias folding applies here
+    /// too — once a variable is bound to <c>int</c>, a later <c>Int32</c>
+    /// is still a match.
+    /// </summary>
+    private static bool TypeRefEquals(TypeRef a, TypeRef b)
+    {
+        if (!DimsEqual(a.ArrayDims, b.ArrayDims)) return false;
+        if (!SimpleNameEquals(a.Name, b.Name)) return false;
+        if (a.Args.Count != b.Args.Count) return false;
+        for (var i = 0; i < a.Args.Count; i++)
+        {
+            if (!TypeRefEquals(a.Args[i], b.Args[i])) return false;
+        }
+        return true;
     }
 
     private static bool DimsEqual(IReadOnlyList<int> a, IReadOnlyList<int> b)
@@ -150,5 +194,16 @@ public static class TypeQueryMatcher
     {
         try { return TypeQuery.ParseType(text); }
         catch (FormatException) { return null; }
+    }
+
+    /// <summary>
+    /// Per-method bindings built up during unification. Query and method
+    /// variables live in separate namespaces so a user's <c>T</c> and a
+    /// method's <c>T</c> generic don't accidentally collide.
+    /// </summary>
+    private sealed class UnificationState
+    {
+        public Dictionary<string, TypeRef> Query { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, TypeRef> Method { get; } = new(StringComparer.Ordinal);
     }
 }
