@@ -5,7 +5,8 @@ namespace CSharpHoogle.Cli;
 /// <summary>
 /// Entry point for the <c>csharp-hoogle</c> CLI.
 /// Usage:
-///   csharp-hoogle &lt;query&gt;             substring match on FullName
+///   csharp-hoogle &lt;query&gt;             substring match on FullName, or
+///                                       signature match if the query contains "->"
 ///   csharp-hoogle --rebuild &lt;query&gt;   force a cache rebuild, then search
 ///   csharp-hoogle --rebuild             rebuild cache, print nothing else
 ///   csharp-hoogle --help                show usage
@@ -18,7 +19,7 @@ public static class Program
     {
         var rebuild = false;
         var showHelp = false;
-        string? query = null;
+        var queryParts = new List<string>();
 
         foreach (var arg in args)
         {
@@ -32,17 +33,12 @@ public static class Program
                     rebuild = true;
                     break;
                 default:
-                    if (arg.StartsWith('-'))
+                    if (arg.StartsWith("--", StringComparison.Ordinal))
                     {
                         Console.Error.WriteLine($"Unknown option: {arg}");
                         return 2;
                     }
-                    if (query is not null)
-                    {
-                        Console.Error.WriteLine("Only one query argument is supported.");
-                        return 2;
-                    }
-                    query = arg;
+                    queryParts.Add(arg);
                     break;
             }
         }
@@ -59,7 +55,7 @@ public static class Program
             methods = RebuildAndSave();
         }
 
-        if (query is null)
+        if (queryParts.Count == 0)
         {
             if (!rebuild)
             {
@@ -69,10 +65,16 @@ public static class Program
             return 0;
         }
 
-        var matches = methods
-            .Where(m => m.FullName.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .Take(MaxResults)
-            .ToList();
+        // Join multi-token queries so unquoted input like `A -> B` works.
+        var query = string.Join(' ', queryParts);
+        var matches = TypeQuery.LooksLikeSignatureQuery(query)
+            ? RunSignatureSearch(query, methods)
+            : RunSubstringSearch(query, methods);
+
+        if (matches is null)
+        {
+            return 2;
+        }
 
         if (matches.Count == 0)
         {
@@ -86,6 +88,31 @@ public static class Program
         }
 
         return 0;
+    }
+
+    private static IReadOnlyList<CachedMethod> RunSubstringSearch(string query, IReadOnlyList<CachedMethod> methods)
+        => methods
+            .Where(m => m.FullName.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .Take(MaxResults)
+            .ToList();
+
+    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods)
+    {
+        SignatureQuery sig;
+        try
+        {
+            sig = TypeQuery.ParseSignature(query);
+        }
+        catch (FormatException ex)
+        {
+            Console.Error.WriteLine($"Invalid signature query: {ex.Message}");
+            return null;
+        }
+
+        return methods
+            .Where(m => TypeQueryMatcher.Matches(sig, m))
+            .Take(MaxResults)
+            .ToList();
     }
 
     private static IReadOnlyList<CachedMethod> RebuildAndSave()
@@ -118,8 +145,9 @@ public static class Program
     {
         Console.WriteLine("Usage: csharp-hoogle [--rebuild] <query>");
         Console.WriteLine();
-        Console.WriteLine("  <query>     Substring matched against the method's full name");
-        Console.WriteLine("              (case-insensitive).");
+        Console.WriteLine("  <query>     If it contains \"->\", matched as a type signature");
+        Console.WriteLine("              (e.g. `IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>`).");
+        Console.WriteLine("              Otherwise, case-insensitive substring on the method's full name.");
         Console.WriteLine("  --rebuild   Rebuild the on-disk cache before searching.");
         Console.WriteLine("  --help      Show this message.");
     }
