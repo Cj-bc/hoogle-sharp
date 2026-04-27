@@ -25,6 +25,21 @@ public static class Program
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
+    // Honor NO_COLOR (https://no-color.org) and skip ANSI when stdout is piped.
+    private static readonly bool UseColor =
+        string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))
+        && !Console.IsOutputRedirected;
+
+    private const string AnsiReset = "\x1b[0m";
+    private const string AnsiBold = "\x1b[1m";
+    private const string AnsiDim = "\x1b[2m";
+    private const string AnsiCyan = "\x1b[36m";
+    private const string AnsiYellow = "\x1b[33m";
+    private const string AnsiMagenta = "\x1b[35m";
+
+    private static string Color(string text, string ansi) =>
+        UseColor ? $"{ansi}{text}{AnsiReset}" : text;
+
     public static int Main(string[] args)
     {
         var rebuild = false;
@@ -171,15 +186,17 @@ public static class Program
     {
         var paramList = string.Join(", ", m.ParameterTypes);
         var generics = m.GenericParams.Length > 0 ? $"<{string.Join(", ", m.GenericParams)}>" : "";
-        var prefix = m.IsExtensionMethod ? "(ext) " : "";
-        Console.WriteLine($"{prefix}{m.FullName}{generics}({paramList}) : {m.ReturnType}");
+        var prefix = m.IsExtensionMethod ? Color("(ext) ", AnsiMagenta) : "";
+        var name = Color($"{m.FullName}{generics}", AnsiBold + AnsiCyan);
+        var sig = Color($"({paramList}) : {m.ReturnType}", AnsiYellow);
+        Console.WriteLine($"{prefix}{name}{sig}");
         if (!string.IsNullOrWhiteSpace(m.Summary))
         {
-            Console.WriteLine($"    {m.Summary}");
+            Console.WriteLine(Color($"    {m.Summary}", AnsiDim));
         }
         if (!string.IsNullOrEmpty(m.DocUrl))
         {
-            Console.WriteLine($"    {m.DocUrl}");
+            Console.WriteLine(Color($"    {m.DocUrl}", AnsiDim));
         }
     }
 
