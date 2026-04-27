@@ -7,6 +7,10 @@ namespace CSharpHoogle.Cli;
 /// Rules:
 /// <list type="bullet">
 ///   <item>Arity must match: the query's parameter count equals the method's.</item>
+///   <item>Parameter order is not significant at the top level: the matcher
+///     searches for any one-to-one assignment of query parameters to method
+///     parameters that satisfies the type rules. Generic arguments inside a
+///     type (e.g. <c>Func&lt;int, bool&gt;</c>) remain positional.</item>
 ///   <item>C# keyword aliases match their BCL type names (<c>int</c> ↔ <c>Int32</c> etc.).</item>
 ///   <item>Generic-parameter-like names on either side act as unification variables:
 ///     repeated occurrences of the same variable must bind to the same type.
@@ -47,22 +51,72 @@ public static class TypeQueryMatcher
         }
 
         var methodGenerics = method.GenericParams;
+
+        var methodParams = new TypeRef[method.ParameterTypes.Length];
+        for (var i = 0; i < method.ParameterTypes.Length; i++)
+        {
+            var parsed = SafeParse(method.ParameterTypes[i]);
+            if (parsed is null)
+            {
+                return false;
+            }
+            methodParams[i] = parsed;
+        }
+
+        var ret = SafeParse(method.ReturnType);
+        if (ret is null)
+        {
+            return false;
+        }
+
         // Bindings are kept per-method so one method's signature is unified
         // as a whole — variables carry their meaning across parameters and
         // return type.
         var bindings = new UnificationState();
+        var used = new bool[methodParams.Length];
+        return TryAssignParameters(query, methodParams, ret, methodGenerics, bindings, used, 0);
+    }
 
-        for (var i = 0; i < query.Parameters.Count; i++)
+    /// <summary>
+    /// Backtracking search for a one-to-one assignment of query parameters
+    /// to method parameters that the type rules accept. Order at the top
+    /// level is not significant, so the user's <c>int -&gt; string -&gt; bool</c>
+    /// matches a method that takes <c>(string, int)</c> as well as one that
+    /// takes <c>(int, string)</c>. Bindings made during a failed branch are
+    /// rolled back before trying the next slot.
+    /// </summary>
+    private static bool TryAssignParameters(
+        SignatureQuery query,
+        IReadOnlyList<TypeRef> methodParams,
+        TypeRef methodReturn,
+        IReadOnlyList<string> methodGenerics,
+        UnificationState bindings,
+        bool[] used,
+        int qIndex)
+    {
+        if (qIndex == query.Parameters.Count)
         {
-            var methodType = SafeParse(method.ParameterTypes[i]);
-            if (methodType is null || !MatchType(query.Parameters[i], methodType, methodGenerics, bindings))
-            {
-                return false;
-            }
+            return MatchType(query.Return, methodReturn, methodGenerics, bindings);
         }
 
-        var ret = SafeParse(method.ReturnType);
-        return ret is not null && MatchType(query.Return, ret, methodGenerics, bindings);
+        var queryParam = query.Parameters[qIndex];
+        for (var j = 0; j < methodParams.Count; j++)
+        {
+            if (used[j]) continue;
+
+            var snapshot = bindings.Snapshot();
+            if (MatchType(queryParam, methodParams[j], methodGenerics, bindings))
+            {
+                used[j] = true;
+                if (TryAssignParameters(query, methodParams, methodReturn, methodGenerics, bindings, used, qIndex + 1))
+                {
+                    return true;
+                }
+                used[j] = false;
+            }
+            bindings.Restore(snapshot);
+        }
+        return false;
     }
 
     private static bool MatchType(TypeRef query, TypeRef method, IReadOnlyList<string> methodGenerics, UnificationState bindings)
@@ -205,5 +259,27 @@ public static class TypeQueryMatcher
     {
         public Dictionary<string, TypeRef> Query { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, TypeRef> Method { get; } = new(StringComparer.Ordinal);
+
+        public BindingsSnapshot Snapshot() => new(Query.Count, Method.Count, Query.Keys.ToArray(), Method.Keys.ToArray());
+
+        public void Restore(BindingsSnapshot snap)
+        {
+            if (Query.Count != snap.QueryCount)
+            {
+                foreach (var key in Query.Keys.ToArray())
+                {
+                    if (Array.IndexOf(snap.QueryKeys, key) < 0) Query.Remove(key);
+                }
+            }
+            if (Method.Count != snap.MethodCount)
+            {
+                foreach (var key in Method.Keys.ToArray())
+                {
+                    if (Array.IndexOf(snap.MethodKeys, key) < 0) Method.Remove(key);
+                }
+            }
+        }
     }
+
+    private readonly record struct BindingsSnapshot(int QueryCount, int MethodCount, string[] QueryKeys, string[] MethodKeys);
 }
