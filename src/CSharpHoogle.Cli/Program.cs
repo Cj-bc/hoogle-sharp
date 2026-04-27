@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace CSharpHoogle.Cli;
 
@@ -10,17 +11,26 @@ namespace CSharpHoogle.Cli;
 ///   csharp-hoogle --rebuild &lt;query&gt;   force a cache rebuild, then search
 ///   csharp-hoogle --rebuild             rebuild cache, print nothing else
 ///   csharp-hoogle --list-assemblies     list assemblies in the cache with method counts
+///   csharp-hoogle --json                emit results as JSON for piping into other tools
 ///   csharp-hoogle --help                show usage
 /// </summary>
 public static class Program
 {
     private const int MaxResults = 50;
 
+    private static readonly JsonSerializerOptions JsonOut = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
     public static int Main(string[] args)
     {
         var rebuild = false;
         var showHelp = false;
         var listAssemblies = false;
+        var json = false;
         var queryParts = new List<string>();
 
         foreach (var arg in args)
@@ -36,6 +46,9 @@ public static class Program
                     break;
                 case "--list-assemblies":
                     listAssemblies = true;
+                    break;
+                case "--json":
+                    json = true;
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -62,7 +75,14 @@ public static class Program
 
         if (listAssemblies)
         {
-            PrintAssemblyList(methods);
+            if (json)
+            {
+                PrintAssemblyListJson(methods);
+            }
+            else
+            {
+                PrintAssemblyList(methods);
+            }
             return 0;
         }
 
@@ -90,12 +110,23 @@ public static class Program
         if (matches.Count == 0)
         {
             Console.Error.WriteLine($"No matches for \"{query}\".");
+            if (json)
+            {
+                PrintMatchesJson(matches);
+            }
             return 1;
         }
 
-        foreach (var m in matches)
+        if (json)
         {
-            PrintMatch(m);
+            PrintMatchesJson(matches);
+        }
+        else
+        {
+            foreach (var m in matches)
+            {
+                PrintMatch(m);
+            }
         }
 
         return 0;
@@ -172,15 +203,46 @@ public static class Program
         Console.WriteLine($"Total: {groups.Count:N0} sources, {methods.Count:N0} methods");
     }
 
+    private static void PrintMatchesJson(IReadOnlyList<CachedMethod> matches)
+    {
+        var projected = matches.Select(m => new
+        {
+            fullName = m.FullName,
+            returnType = m.ReturnType,
+            parameterTypes = m.ParameterTypes,
+            genericParams = m.GenericParams,
+            isExtensionMethod = m.IsExtensionMethod,
+            summary = m.Summary,
+            docUrl = m.DocUrl,
+            source = m.Source.Name,
+        });
+        Console.WriteLine(JsonSerializer.Serialize(projected, JsonOut));
+    }
+
+    private static void PrintAssemblyListJson(IReadOnlyList<CachedMethod> methods)
+    {
+        var groups = methods
+            .GroupBy(m => m.Source)
+            .OrderBy(g => g.Key.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new
+            {
+                name = g.Key.Name,
+                kind = g.Key.Kind,
+                methodCount = g.Count(),
+            });
+        Console.WriteLine(JsonSerializer.Serialize(groups, JsonOut));
+    }
+
     private static void PrintUsage()
     {
-        Console.WriteLine("Usage: csharp-hoogle [--rebuild] [--list-assemblies] <query>");
+        Console.WriteLine("Usage: csharp-hoogle [--rebuild] [--list-assemblies] [--json] <query>");
         Console.WriteLine();
         Console.WriteLine("  <query>             If it contains \"->\", matched as a type signature");
         Console.WriteLine("                      (e.g. `IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>`).");
         Console.WriteLine("                      Otherwise, case-insensitive substring on the method's full name.");
         Console.WriteLine("  --rebuild           Rebuild the on-disk cache before searching.");
         Console.WriteLine("  --list-assemblies   List assemblies in the cache with method counts (no query).");
+        Console.WriteLine("  --json              Emit results as JSON on stdout (for piping into other tools).");
         Console.WriteLine("  --help              Show this message.");
     }
 }
