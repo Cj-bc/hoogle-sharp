@@ -107,10 +107,23 @@ public static class Program
 
         var ctx = ProjectContextDetector.Detect(Environment.CurrentDirectory, projectOverride, tfmOverride);
 
+        // Resolve deps once up-front so manifest mtimes can drive cache invalidation
+        // and the same dep set feeds RebuildAndSave on a miss. Capture progress into
+        // a buffer so cache hits stay quiet; flush only on a rebuild.
+        var depMessages = new List<string>();
+        ProjectDependencies? deps = ctx is null
+            ? null
+            : ProjectDependencyResolver.Resolve(ctx, msg => depMessages.Add(msg));
+        var manifestPaths = deps?.ManifestPaths ?? (IReadOnlyList<string>)Array.Empty<string>();
+
         IReadOnlyList<CachedMethod> methods;
-        if (rebuild || !CacheStore.TryLoad(ctx, out methods))
+        if (rebuild || !CacheStore.TryLoad(ctx, manifestPaths, out methods))
         {
-            methods = RebuildAndSave(ctx);
+            foreach (var m in depMessages)
+            {
+                Console.Error.WriteLine(m);
+            }
+            methods = RebuildAndSave(ctx, deps);
         }
 
         if (listAssemblies)
@@ -197,14 +210,14 @@ public static class Program
             .ToList();
     }
 
-    private static IReadOnlyList<CachedMethod> RebuildAndSave(ProjectContext? ctx)
+    private static IReadOnlyList<CachedMethod> RebuildAndSave(ProjectContext? ctx, ProjectDependencies? deps)
     {
         if (ctx is not null)
         {
             Console.Error.WriteLine($"Detected project: {ctx.Tfm} ({ctx.Sdk}) from {ctx.OriginPath}");
         }
         var sw = Stopwatch.StartNew();
-        var methods = IndexBuilder.BuildBclIndex(ctx, msg => Console.Error.WriteLine(msg));
+        var methods = IndexBuilder.BuildIndex(ctx, deps, msg => Console.Error.WriteLine(msg));
         CacheStore.Save(ctx, methods);
         sw.Stop();
         Console.Error.WriteLine($"Cached {methods.Count:N0} methods in {sw.Elapsed.TotalSeconds:F1}s → {CacheStore.GetCachePath(ctx)}");

@@ -25,6 +25,18 @@ public sealed record ProjectContext(string Tfm, SdkKind Sdk, string OriginPath);
 
 public static class ProjectContextDetector
 {
+    // Tried in priority order when a Unity csproj declares a TFM that the strict
+    // .NET-Core gate rejects. NuGetForUnity packages typically ship lib dirs for
+    // these moniker names.
+    private static readonly string[] UnityFallbackTfms =
+    {
+        "netstandard2.1",
+        "netstandard2.0",
+        "net48",
+        "net471",
+        "net46",
+    };
+
     /// <summary>
     /// Walk-up detection per spec: solution at cwd → solution in any parent →
     /// csproj at cwd only. Returns null when nothing matches; callers should
@@ -44,6 +56,30 @@ public static class ProjectContextDetector
 
         var detected = WalkUp(cwd);
         return ApplyTfmOverride(detected, tfmOverride);
+    }
+
+    /// <summary>
+    /// Returns the set of csproj paths the given origin would aggregate over —
+    /// the single csproj for a .csproj origin, every member project for a .sln
+    /// or .slnx. Used by dependency resolvers to iterate the same projects that
+    /// fed TFM aggregation. Returns empty for non-file origins (e.g. the
+    /// "&lt;--target-framework&gt;" sentinel).
+    /// </summary>
+    public static IReadOnlyList<string> EnumerateCsprojs(string originPath)
+    {
+        if (string.IsNullOrEmpty(originPath) || !File.Exists(originPath))
+        {
+            return Array.Empty<string>();
+        }
+
+        var ext = Path.GetExtension(originPath).ToLowerInvariant();
+        return ext switch
+        {
+            ".sln" => CollectCsprojsFromSln(originPath),
+            ".slnx" => CollectCsprojsFromSlnx(originPath),
+            ".csproj" => new[] { Path.GetFullPath(originPath) },
+            _ => Array.Empty<string>(),
+        };
     }
 
     private static ProjectContext? ApplyTfmOverride(ProjectContext? ctx, string? tfmOverride)
@@ -108,7 +144,13 @@ public static class ProjectContextDetector
         };
     }
 
-    private static ProjectContext? LoadFromSln(string slnPath)
+    private static ProjectContext? LoadFromSln(string slnPath) =>
+        Aggregate(CollectCsprojsFromSln(slnPath), slnPath);
+
+    private static ProjectContext? LoadFromSlnx(string slnxPath) =>
+        Aggregate(CollectCsprojsFromSlnx(slnxPath), slnxPath);
+
+    private static IReadOnlyList<string> CollectCsprojsFromSln(string slnPath)
     {
         // sln line: Project("{type-guid}") = "Name", "relative\path\proj.csproj", "{guid}"
         var rx = new Regex(
@@ -128,11 +170,10 @@ public static class ProjectContextDetector
             rel = rel.Replace('\\', Path.DirectorySeparatorChar);
             csprojs.Add(Path.GetFullPath(Path.Combine(slnDir, rel)));
         }
-
-        return Aggregate(csprojs, slnPath);
+        return csprojs;
     }
 
-    private static ProjectContext? LoadFromSlnx(string slnxPath)
+    private static IReadOnlyList<string> CollectCsprojsFromSlnx(string slnxPath)
     {
         XDocument doc;
         try
@@ -141,17 +182,15 @@ public static class ProjectContextDetector
         }
         catch (System.Xml.XmlException)
         {
-            return null;
+            return Array.Empty<string>();
         }
 
         var slnDir = Path.GetDirectoryName(slnxPath)!;
-        var csprojs = doc.Descendants("Project")
+        return doc.Descendants("Project")
             .Select(p => (string?)p.Attribute("Path"))
             .Where(p => !string.IsNullOrEmpty(p) && p!.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
             .Select(p => Path.GetFullPath(Path.Combine(slnDir, p!.Replace('\\', Path.DirectorySeparatorChar))))
             .ToList();
-
-        return Aggregate(csprojs, slnxPath);
     }
 
     private static ProjectContext? Aggregate(IReadOnlyList<string> csprojPaths, string originPath)
@@ -199,21 +238,52 @@ public static class ProjectContextDetector
         var sdkKind = ClassifySdk(sdkAttr);
 
         // Single-TFM and multi-TFM forms; element name is unqualified in SDK-style csproj.
-        var tfms = root.Descendants("TargetFramework")
+        var rawTfms = root.Descendants("TargetFramework")
             .Select(e => e.Value)
             .Concat(root.Descendants("TargetFrameworks").SelectMany(e => e.Value.Split(';')))
             .Select(s => s.Trim())
             .Where(s => s.Length > 0)
-            .Where(IsSupportedNetTfm)
             .ToList();
 
-        if (tfms.Count == 0)
+        var supported = rawTfms.Where(IsSupportedNetTfm).ToList();
+        if (supported.Count > 0)
         {
-            return null;
+            var tfm = supported.OrderByDescending(TfmKey).First();
+            return new ProjectContext(tfm, sdkKind, csprojPath);
         }
 
-        var tfm = tfms.OrderByDescending(TfmKey).First();
-        return new ProjectContext(tfm, sdkKind, csprojPath);
+        // Unity fallback: a Unity-shaped tree (Assets/packages.config in any ancestor)
+        // has csprojs declaring TFMs the .NET-Core gate rejects (netstandard2.1, net48).
+        // Accept the highest-priority Unity TFM the project actually declares; SDK kind
+        // is forced to Default (BCL ref-pack resolution gates on IsSupportedNetTfm so
+        // ref packs still won't be used — the index falls through to runtime BCL).
+        if (HasUnityPackagesConfig(csprojPath))
+        {
+            foreach (var preferred in UnityFallbackTfms)
+            {
+                if (rawTfms.Contains(preferred, StringComparer.OrdinalIgnoreCase))
+                {
+                    return new ProjectContext(preferred, SdkKind.Default, csprojPath);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool HasUnityPackagesConfig(string csprojPath)
+    {
+        var dir = new DirectoryInfo(Path.GetFullPath(Path.GetDirectoryName(csprojPath)!));
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "Assets", "packages.config");
+            if (File.Exists(candidate))
+            {
+                return true;
+            }
+            dir = dir.Parent;
+        }
+        return false;
     }
 
     private static SdkKind ClassifySdk(string sdk)

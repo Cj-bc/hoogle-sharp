@@ -4,6 +4,10 @@
     <ProjectReference Include="..\CSharpHoogle.Core\CSharpHoogle.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CSharpHoogle.Cli.Tests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>

@@ -1,5 +1,6 @@
 using CSharpHoogle.Core.Indexing;
 using CSharpHoogle.Core.Models;
+using CSharpHoogle.Core.Parsing;
 using CSharpHoogle.Core.Reflection;
 using CSharpHoogle.Core.Storage;
 
@@ -12,13 +13,23 @@ namespace CSharpHoogle.Cli;
 public static class IndexBuilder
 {
     /// <summary>
-    /// Builds the full BCL index. With no <see cref="ProjectContext"/>, walks
-    /// the running runtime's directory (legacy behavior). With a context, picks
-    /// reference packs that match the project's TFM and SDK kind so the index
-    /// matches what the user is actually compiling against.
+    /// Builds the BCL-only index. Kept for callers and tests that don't supply
+    /// a dependency set; routes through <see cref="BuildIndex"/>.
     /// </summary>
     public static IReadOnlyList<CachedMethod> BuildBclIndex(
         ProjectContext? ctx = null,
+        Action<string>? progress = null)
+        => BuildIndex(ctx, deps: null, progress);
+
+    /// <summary>
+    /// Builds the BCL index and, when <paramref name="deps"/> is non-null,
+    /// walks each dependency assembly into the same index — tagged with
+    /// the dep's <see cref="MethodSource"/>. The MetadataLoader is seeded
+    /// with both BCL and dep directories so cross-package references resolve.
+    /// </summary>
+    public static IReadOnlyList<CachedMethod> BuildIndex(
+        ProjectContext? ctx,
+        ProjectDependencies? deps,
         Action<string>? progress = null)
     {
         progress?.Invoke("Parsing BCL XML docs...");
@@ -63,10 +74,44 @@ public static class IndexBuilder
         docs.Store(docIndex.Values);
         progress?.Invoke($"  {docIndex.Count:N0} doc entries loaded from {string.Join(", ", docDirs)}");
 
+        // Add dep doc entries to the shared repo so MethodIndexBuilder can resolve
+        // them while reflecting dep assemblies.
+        if (deps is not null && deps.Entries.Count > 0)
+        {
+            foreach (var entry in deps.Entries)
+            {
+                try
+                {
+                    var docMap = entry.XmlPath is not null
+                        ? XmlDocParser.Parse(entry.XmlPath)
+                        : XmlDocParser.ParseForAssembly(entry.AssemblyPath);
+                    docs.Store(docMap.Values);
+                }
+                catch (Exception ex) when (ex is FileNotFoundException
+                                            or InvalidDataException
+                                            or System.Xml.XmlException)
+                {
+                    // Reflection can still produce signatures without the docs.
+                }
+            }
+        }
+
+        // Loader covers BCL search dirs + every distinct directory that contains a
+        // dep dll. This lets references between packages (and from packages back
+        // into BCL) resolve while we reflect.
+        var depDirs = (deps?.Entries ?? Array.Empty<DependencyEntry>())
+            .Select(e => Path.GetDirectoryName(e.AssemblyPath))
+            .Where(d => !string.IsNullOrEmpty(d))
+            .Select(d => d!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var loaderDirs = walkDirs.Concat(depDirs).ToList();
+
         progress?.Invoke("Walking BCL assemblies...");
         using var loader = fromRefPacks
-            ? new MetadataLoader(walkDirs, includeRuntimeDir: false)
-            : new MetadataLoader();
+            ? new MetadataLoader(loaderDirs, includeRuntimeDir: false)
+            : new MetadataLoader(loaderDirs);
         var all = new List<CachedMethod>();
         var assemblyCount = 0;
 
@@ -99,6 +144,41 @@ public static class IndexBuilder
         }
 
         progress?.Invoke($"  {all.Count:N0} methods from {assemblyCount} assemblies");
+
+        if (deps is not null && deps.Entries.Count > 0)
+        {
+            progress?.Invoke($"Walking {deps.Entries.Count} dependency assemblies...");
+            var depMethodCount = 0;
+            var depAssemblyCount = 0;
+
+            foreach (var entry in deps.Entries)
+            {
+                if (!MetadataLoader.IsManagedAssembly(entry.AssemblyPath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var asm = loader.LoadFromAssemblyPath(entry.AssemblyPath);
+                    var source = new MethodSource(entry.SourceKind, entry.SourceName);
+                    var methods = MethodIndexBuilder.BuildFromAssembly(asm, docs);
+                    foreach (var m in methods)
+                    {
+                        all.Add(Project(m, source));
+                        depMethodCount++;
+                    }
+                    depAssemblyCount++;
+                }
+                catch (Exception ex) when (ex is BadImageFormatException or FileLoadException)
+                {
+                    // Skip — same policy as BCL walk.
+                }
+            }
+
+            progress?.Invoke($"  {depMethodCount:N0} methods from {depAssemblyCount} dependency assemblies");
+        }
+
         return all;
     }
 

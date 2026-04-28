@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -6,14 +7,14 @@ namespace CSharpHoogle.Cli;
 
 /// <summary>
 /// Reads and writes the CLI's on-disk index cache. With a <see cref="ProjectContext"/>
-/// the cache is keyed by (TFM, SDK kind) so different projects can each keep their
-/// own index. With no context, falls back to a runtime-version-keyed file (the
-/// pre-project-detection behavior).
+/// the cache is keyed by (TFM, SDK kind, origin-hash) so each project keeps its own
+/// index even when several projects share a TFM. With no context, falls back to a
+/// runtime-version-keyed file (the pre-project-detection behavior).
 /// </summary>
 public static class CacheStore
 {
     private const string AppFolderName = "csharp-hoogle";
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -40,15 +41,38 @@ public static class CacheStore
     }
 
     public static bool TryLoad(out IReadOnlyList<CachedMethod> methods) =>
-        TryLoad(null, out methods);
+        TryLoad(null, Array.Empty<string>(), out methods);
 
-    public static bool TryLoad(ProjectContext? ctx, out IReadOnlyList<CachedMethod> methods)
+    public static bool TryLoad(ProjectContext? ctx, out IReadOnlyList<CachedMethod> methods) =>
+        TryLoad(ctx, Array.Empty<string>(), out methods);
+
+    /// <summary>
+    /// Loads the cached index, treating it as a miss when any path in
+    /// <paramref name="manifestPaths"/> (typically project.assets.json /
+    /// packages.config) has a newer mtime than the cache file. This lets a
+    /// fresh <c>dotnet restore</c> auto-invalidate the cache without the user
+    /// having to pass <c>--rebuild</c>.
+    /// </summary>
+    public static bool TryLoad(
+        ProjectContext? ctx,
+        IReadOnlyList<string> manifestPaths,
+        out IReadOnlyList<CachedMethod> methods)
     {
         var path = GetCachePath(ctx);
         if (!File.Exists(path))
         {
             methods = Array.Empty<CachedMethod>();
             return false;
+        }
+
+        var cacheMtime = File.GetLastWriteTimeUtc(path);
+        foreach (var manifest in manifestPaths)
+        {
+            if (File.Exists(manifest) && File.GetLastWriteTimeUtc(manifest) > cacheMtime)
+            {
+                methods = Array.Empty<CachedMethod>();
+                return false;
+            }
         }
 
         try
@@ -80,9 +104,15 @@ public static class CacheStore
     private static string GetContextTag(ProjectContext ctx)
     {
         var tfm = SanitizeTag(ctx.Tfm);
-        return ctx.Sdk == SdkKind.Default
-            ? tfm
-            : $"{tfm}-{ctx.Sdk.ToString().ToLowerInvariant()}";
+        var sdkPart = ctx.Sdk == SdkKind.Default ? "" : $"-{ctx.Sdk.ToString().ToLowerInvariant()}";
+        return $"{tfm}{sdkPart}-{OriginHash(ctx.OriginPath)}";
+    }
+
+    private static string OriginHash(string originPath)
+    {
+        var bytes = Encoding.UTF8.GetBytes(originPath);
+        var hash = SHA1.HashData(bytes);
+        return Convert.ToHexString(hash).Substring(0, 8).ToLowerInvariant();
     }
 
     private static string SanitizeTag(string raw)

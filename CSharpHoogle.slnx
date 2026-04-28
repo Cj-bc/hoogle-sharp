@@ -4,6 +4,7 @@
     <Project Path="src/CSharpHoogle.Core/CSharpHoogle.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/CSharpHoogle.Cli.Tests/CSharpHoogle.Cli.Tests.csproj" />
     <Project Path="tests/CSharpHoogle.Core.Tests/CSharpHoogle.Core.Tests.csproj" />
   </Folder>
 </Solution>
