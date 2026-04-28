@@ -12,6 +12,9 @@ namespace CSharpHoogle.Cli;
 ///   csharp-hoogle --rebuild             rebuild cache, print nothing else
 ///   csharp-hoogle --list-assemblies     list assemblies in the cache with method counts
 ///   csharp-hoogle --json                emit results as JSON for piping into other tools
+///   csharp-hoogle --project &lt;path&gt;   pin context to a specific sln/slnx/csproj
+///   csharp-hoogle --target-framework &lt;tfm&gt; / -f &lt;tfm&gt;
+///                                       pin TFM (overrides on-disk detection)
 ///   csharp-hoogle --help                show usage
 /// </summary>
 public static class Program
@@ -46,10 +49,13 @@ public static class Program
         var showHelp = false;
         var listAssemblies = false;
         var json = false;
+        string? projectOverride = null;
+        string? tfmOverride = null;
         var queryParts = new List<string>();
 
-        foreach (var arg in args)
+        for (var i = 0; i < args.Length; i++)
         {
+            var arg = args[i];
             switch (arg)
             {
                 case "--help":
@@ -64,6 +70,23 @@ public static class Program
                     break;
                 case "--json":
                     json = true;
+                    break;
+                case "--project":
+                    if (++i >= args.Length)
+                    {
+                        Console.Error.WriteLine("--project requires a path argument.");
+                        return 2;
+                    }
+                    projectOverride = args[i];
+                    break;
+                case "--target-framework":
+                case "-f":
+                    if (++i >= args.Length)
+                    {
+                        Console.Error.WriteLine($"{arg} requires a TFM argument (e.g. net8.0).");
+                        return 2;
+                    }
+                    tfmOverride = args[i];
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -82,10 +105,12 @@ public static class Program
             return 0;
         }
 
+        var ctx = ProjectContextDetector.Detect(Environment.CurrentDirectory, projectOverride, tfmOverride);
+
         IReadOnlyList<CachedMethod> methods;
-        if (rebuild || !CacheStore.TryLoad(out methods))
+        if (rebuild || !CacheStore.TryLoad(ctx, out methods))
         {
-            methods = RebuildAndSave();
+            methods = RebuildAndSave(ctx);
         }
 
         if (listAssemblies)
@@ -172,13 +197,17 @@ public static class Program
             .ToList();
     }
 
-    private static IReadOnlyList<CachedMethod> RebuildAndSave()
+    private static IReadOnlyList<CachedMethod> RebuildAndSave(ProjectContext? ctx)
     {
+        if (ctx is not null)
+        {
+            Console.Error.WriteLine($"Detected project: {ctx.Tfm} ({ctx.Sdk}) from {ctx.OriginPath}");
+        }
         var sw = Stopwatch.StartNew();
-        var methods = IndexBuilder.BuildBclIndex(msg => Console.Error.WriteLine(msg));
-        CacheStore.Save(methods);
+        var methods = IndexBuilder.BuildBclIndex(ctx, msg => Console.Error.WriteLine(msg));
+        CacheStore.Save(ctx, methods);
         sw.Stop();
-        Console.Error.WriteLine($"Cached {methods.Count:N0} methods in {sw.Elapsed.TotalSeconds:F1}s → {CacheStore.GetCachePath()}");
+        Console.Error.WriteLine($"Cached {methods.Count:N0} methods in {sw.Elapsed.TotalSeconds:F1}s → {CacheStore.GetCachePath(ctx)}");
         return methods;
     }
 
@@ -252,14 +281,20 @@ public static class Program
 
     private static void PrintUsage()
     {
-        Console.WriteLine("Usage: csharp-hoogle [--rebuild] [--list-assemblies] [--json] <query>");
+        Console.WriteLine("Usage: csharp-hoogle [options] <query>");
         Console.WriteLine();
-        Console.WriteLine("  <query>             If it contains \"->\", matched as a type signature");
-        Console.WriteLine("                      (e.g. `IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>`).");
-        Console.WriteLine("                      Otherwise, case-insensitive substring on the method's full name.");
-        Console.WriteLine("  --rebuild           Rebuild the on-disk cache before searching.");
-        Console.WriteLine("  --list-assemblies   List assemblies in the cache with method counts (no query).");
-        Console.WriteLine("  --json              Emit results as JSON on stdout (for piping into other tools).");
-        Console.WriteLine("  --help              Show this message.");
+        Console.WriteLine("  <query>                       If it contains \"->\", matched as a type signature");
+        Console.WriteLine("                                (e.g. `IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>`).");
+        Console.WriteLine("                                Otherwise, case-insensitive substring on the full name.");
+        Console.WriteLine("  --rebuild                     Rebuild the on-disk cache before searching.");
+        Console.WriteLine("  --list-assemblies             List assemblies in the cache with method counts.");
+        Console.WriteLine("  --json                        Emit results as JSON on stdout (for piping into tools).");
+        Console.WriteLine("  --project <path>              Pin context to a specific .sln/.slnx/.csproj file.");
+        Console.WriteLine("  --target-framework <tfm>, -f  Pin TFM (e.g. net8.0); overrides on-disk detection.");
+        Console.WriteLine("  --help                        Show this message.");
+        Console.WriteLine();
+        Console.WriteLine("Without overrides, csharp-hoogle walks up from the current directory looking for");
+        Console.WriteLine("a .sln/.slnx; if none, falls back to a .csproj at the current directory; if none,");
+        Console.WriteLine("uses the running .NET runtime.");
     }
 }

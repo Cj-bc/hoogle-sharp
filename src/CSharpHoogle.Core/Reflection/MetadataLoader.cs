@@ -22,20 +22,36 @@ public sealed class MetadataLoader : IDisposable
     /// directories is added to the resolver's path list.
     /// </summary>
     public MetadataLoader(IEnumerable<string>? extraSearchDirs = null)
+        : this(extraSearchDirs, includeRuntimeDir: true)
     {
-        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)
-            ?? throw new InvalidOperationException(
-                "Could not determine runtime directory from typeof(object).Assembly.Location.");
+    }
 
+    /// <summary>
+    /// Creates a loader from an explicit set of search directories. When
+    /// <paramref name="includeRuntimeDir"/> is false, the running runtime is NOT
+    /// auto-added — required when the search dirs already contain a complete BCL
+    /// (e.g. a reference pack), since two copies of <c>mscorlib</c> would collide
+    /// inside <see cref="MetadataLoadContext"/>.
+    /// </summary>
+    public MetadataLoader(IEnumerable<string>? searchDirs, bool includeRuntimeDir)
+    {
         _searchPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var dll in Directory.EnumerateFiles(runtimeDir, "*.dll"))
+
+        if (includeRuntimeDir)
         {
-            _searchPaths.Add(dll);
+            var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)
+                ?? throw new InvalidOperationException(
+                    "Could not determine runtime directory from typeof(object).Assembly.Location.");
+
+            foreach (var dll in Directory.EnumerateFiles(runtimeDir, "*.dll"))
+            {
+                _searchPaths.Add(dll);
+            }
         }
 
-        if (extraSearchDirs is not null)
+        if (searchDirs is not null)
         {
-            foreach (var dir in extraSearchDirs)
+            foreach (var dir in searchDirs)
             {
                 if (!Directory.Exists(dir))
                 {

@@ -20,13 +20,30 @@ public static class BclIndexBuilder
     public static IReadOnlyDictionary<string, DocEntry> BuildFromRuntime(string? docDir = null)
     {
         docDir ??= ResolveDefaultDocDir();
+        return BuildFromRuntime(new[] { docDir });
+    }
 
+    /// <summary>
+    /// Multi-directory variant: merges doc indices across several reference-pack
+    /// directories (e.g. <c>Microsoft.NETCore.App.Ref</c> + <c>Microsoft.AspNetCore.App.Ref</c>
+    /// for an ASP.NET Core project). Last write wins on duplicate member keys —
+    /// later dirs in the list override earlier ones.
+    /// </summary>
+    public static IReadOnlyDictionary<string, DocEntry> BuildFromRuntime(IReadOnlyList<string> docDirs)
+    {
         var merged = new Dictionary<string, DocEntry>(StringComparer.Ordinal);
-        foreach (var dll in Directory.EnumerateFiles(docDir, "*.dll"))
+        foreach (var docDir in docDirs)
         {
-            foreach (var kv in XmlDocParser.ParseForAssembly(dll))
+            if (!Directory.Exists(docDir))
             {
-                merged[kv.Key] = kv.Value;
+                continue;
+            }
+            foreach (var dll in Directory.EnumerateFiles(docDir, "*.dll"))
+            {
+                foreach (var kv in XmlDocParser.ParseForAssembly(dll))
+                {
+                    merged[kv.Key] = kv.Value;
+                }
             }
         }
 
@@ -56,7 +73,8 @@ public static class BclIndexBuilder
             return runtimeDir;
         }
 
-        if (TryResolveReferencePackDir(runtimeDir, out var refPackDir))
+        var (major, minor) = GetRunningTfm();
+        if (TryResolveReferencePackDir(runtimeDir, "Microsoft.NETCore.App.Ref", major, minor, out var refPackDir))
         {
             return refPackDir;
         }
@@ -64,12 +82,52 @@ public static class BclIndexBuilder
         return runtimeDir;
     }
 
-    private static bool TryResolveReferencePackDir(string runtimeDir, out string refPackDir)
+    /// <summary>
+    /// Resolve the doc directories for an explicit (TFM, pack-name list). Used by the
+    /// CLI when a project context is detected — e.g. a Web project asks for both
+    /// <c>Microsoft.NETCore.App.Ref</c> and <c>Microsoft.AspNetCore.App.Ref</c>.
+    /// Returns directories that actually exist; an empty list means we couldn't find
+    /// any matching ref pack on disk and the caller should fall back.
+    /// </summary>
+    public static IReadOnlyList<string> ResolveDocDirs(int major, int minor, IReadOnlyList<string> packNames)
+    {
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)
+            ?? throw new InvalidOperationException(
+                "Could not determine runtime directory from typeof(object).Assembly.Location.");
+
+        var dirs = new List<string>();
+        foreach (var pack in packNames)
+        {
+            if (TryResolveReferencePackDir(runtimeDir, pack, major, minor, out var dir))
+            {
+                dirs.Add(dir);
+            }
+        }
+        return dirs;
+    }
+
+    private static (int Major, int Minor) GetRunningTfm()
+    {
+        var fxDesc = RuntimeInformation.FrameworkDescription; // e.g. ".NET 8.0.26"
+        var versionToken = fxDesc.Split(' ').LastOrDefault();
+        if (versionToken is not null && Version.TryParse(versionToken, out var fxVer))
+        {
+            return (fxVer.Major, fxVer.Minor);
+        }
+        return (0, 0);
+    }
+
+    private static bool TryResolveReferencePackDir(
+        string runtimeDir,
+        string packName,
+        int major,
+        int minor,
+        out string refPackDir)
     {
         refPackDir = string.Empty;
 
         // runtimeDir = .../dotnet/shared/Microsoft.NETCore.App/{runtimeVer}
-        // We want    .../dotnet/packs/Microsoft.NETCore.App.Ref/{refVer}/ref/net{major.minor}
+        // We want    .../dotnet/packs/{packName}/{refVer}/ref/net{major.minor}
         var sharedDir = Path.GetDirectoryName(runtimeDir);        // shared/Microsoft.NETCore.App
         var shared = Path.GetDirectoryName(sharedDir);            // shared
         var dotnetRoot = Path.GetDirectoryName(shared);           // dotnet
@@ -78,28 +136,25 @@ public static class BclIndexBuilder
             return false;
         }
 
-        var packsRef = Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
+        var packsRef = Path.Combine(dotnetRoot, "packs", packName);
         if (!Directory.Exists(packsRef))
         {
             return false;
         }
 
-        // Running runtime major.minor — used to pick the matching net{x.y} folder.
-        var fxDesc = RuntimeInformation.FrameworkDescription; // e.g. ".NET 8.0.26"
-        var versionToken = fxDesc.Split(' ').LastOrDefault();
-        if (versionToken is null || !Version.TryParse(versionToken, out var fxVer))
+        if (major <= 0)
         {
             return false;
         }
 
-        var tfm = $"net{fxVer.Major}.{fxVer.Minor}";
+        var tfm = $"net{major}.{minor}";
 
-        // Prefer the ref-pack version closest to the running runtime: same major.minor,
-        // highest patch. Fall back to any ref pack with a matching ref/net{tfm} folder.
+        // Pick the highest patch matching the requested major.minor; fall back to
+        // any ref pack whose ref/net{tfm} folder exists.
         var candidates = Directory.GetDirectories(packsRef)
             .Select(dir => (Dir: dir, Ver: TryParseVersion(Path.GetFileName(dir))))
             .Where(t => t.Ver is not null)
-            .Where(t => t.Ver!.Major == fxVer.Major && t.Ver.Minor == fxVer.Minor)
+            .Where(t => t.Ver!.Major == major && t.Ver.Minor == minor)
             .OrderByDescending(t => t.Ver)
             .Select(t => Path.Combine(t.Dir, "ref", tfm))
             .Where(Directory.Exists)
