@@ -12,4 +12,5 @@ public record MethodEntry(
     string[] GenericParams,
     bool IsExtensionMethod,
     string DocUrl,
-    DocEntry? Doc);
+    DocEntry? Doc,
+    int RequiredParameterCount);

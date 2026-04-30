@@ -198,5 +198,6 @@ public static class IndexBuilder
         IsExtensionMethod: m.IsExtensionMethod,
         DocUrl: m.DocUrl,
         Summary: m.Doc?.Summary,
-        Source: source);
+        Source: source,
+        RequiredParameterCount: m.RequiredParameterCount);
 }

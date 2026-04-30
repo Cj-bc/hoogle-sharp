@@ -21,4 +21,5 @@ public sealed record CachedMethod(
     bool IsExtensionMethod,
     string DocUrl,
     string? Summary,
-    MethodSource Source);
+    MethodSource Source,
+    int RequiredParameterCount);

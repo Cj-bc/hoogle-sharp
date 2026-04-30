@@ -94,7 +94,16 @@ public static class MethodIndexBuilder
     {
         var memberKey = XmlDocId.MethodId(method);
         var fullName = BuildFullName(method);
-        var paramTypes = Array.ConvertAll(method.GetParameters(), p => p.ParameterType);
+        var rawParams = method.GetParameters();
+        var paramTypes = Array.ConvertAll(rawParams, p => p.ParameterType);
+        // Trailing-optional scan: any IsOptional run at the tail is omittable.
+        // Stops at the first non-optional, so the rare IL-level non-trailing
+        // case is treated as required — safe default.
+        var requiredCount = rawParams.Length;
+        while (requiredCount > 0 && rawParams[requiredCount - 1].IsOptional)
+        {
+            requiredCount--;
+        }
         var genericParams = method.IsGenericMethodDefinition
             ? Array.ConvertAll(method.GetGenericArguments(), g => g.Name)
             : Array.Empty<string>();
@@ -106,7 +115,8 @@ public static class MethodIndexBuilder
             GenericParams: genericParams,
             IsExtensionMethod: IsExtensionMethod(method),
             DocUrl: DocUrlResolver.Resolve(memberKey),
-            Doc: docs.Get(memberKey));
+            Doc: docs.Get(memberKey),
+            RequiredParameterCount: requiredCount);
     }
 
     private static string BuildFullName(MethodInfo method)

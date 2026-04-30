@@ -6,7 +6,9 @@ namespace CSharpHoogle.Cli;
 ///
 /// Rules:
 /// <list type="bullet">
-///   <item>Arity must match: the query's parameter count equals the method's.</item>
+///   <item>Query arity must lie between the method's required count and its
+///     total count: trailing optional parameters (<c>= default</c>) may be
+///     omitted from the query, but every required parameter must be matched.</item>
 ///   <item>Parameter order is not significant at the top level: the matcher
 ///     searches for any one-to-one assignment of query parameters to method
 ///     parameters that satisfies the type rules. Generic arguments inside a
@@ -45,7 +47,8 @@ public static class TypeQueryMatcher
 
     public static bool Matches(SignatureQuery query, CachedMethod method)
     {
-        if (query.Parameters.Count != method.ParameterTypes.Length)
+        if (query.Parameters.Count < method.RequiredParameterCount
+            || query.Parameters.Count > method.ParameterTypes.Length)
         {
             return false;
         }
@@ -74,7 +77,7 @@ public static class TypeQueryMatcher
         // return type.
         var bindings = new UnificationState();
         var used = new bool[methodParams.Length];
-        return TryAssignParameters(query, methodParams, ret, methodGenerics, bindings, used, 0);
+        return TryAssignParameters(query, methodParams, ret, methodGenerics, method.RequiredParameterCount, bindings, used, 0);
     }
 
     /// <summary>
@@ -90,12 +93,20 @@ public static class TypeQueryMatcher
         IReadOnlyList<TypeRef> methodParams,
         TypeRef methodReturn,
         IReadOnlyList<string> methodGenerics,
+        int requiredCount,
         UnificationState bindings,
         bool[] used,
         int qIndex)
     {
         if (qIndex == query.Parameters.Count)
         {
+            // Any unbound method parameter must be in the trailing optional
+            // region; required slots without a query match would mean the
+            // user dropped a mandatory argument.
+            for (var j = 0; j < requiredCount; j++)
+            {
+                if (!used[j]) return false;
+            }
             return MatchType(query.Return, methodReturn, methodGenerics, bindings);
         }
 
@@ -108,7 +119,7 @@ public static class TypeQueryMatcher
             if (MatchType(queryParam, methodParams[j], methodGenerics, bindings))
             {
                 used[j] = true;
-                if (TryAssignParameters(query, methodParams, methodReturn, methodGenerics, bindings, used, qIndex + 1))
+                if (TryAssignParameters(query, methodParams, methodReturn, methodGenerics, requiredCount, bindings, used, qIndex + 1))
                 {
                     return true;
                 }
