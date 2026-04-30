@@ -179,7 +179,169 @@ public static class IndexBuilder
             progress?.Invoke($"  {depMethodCount:N0} methods from {depAssemblyCount} dependency assemblies");
         }
 
+        if (ctx is not null)
+        {
+            progress?.Invoke("Walking source files...");
+            var sourceMethods = new List<CachedMethod>();
+            foreach (var csproj in ProjectContextDetector.EnumerateCsprojs(ctx.OriginPath))
+            {
+                var asmName = ReadAssemblyName(csproj)
+                    ?? Path.GetFileNameWithoutExtension(csproj);
+                var fromCsproj = SourceIndexBuilder.BuildFromCsproj(csproj, asmName, progress);
+                sourceMethods.AddRange(fromCsproj);
+            }
+
+            // Source entries are authoritative for live edits — when their
+            // (FullName, normalized params) matches an already-indexed assembly
+            // entry, drop the assembly one. The normalizer folds C# keyword
+            // aliases (int ↔ Int32) so the source string and the metadata
+            // type name compare equal.
+            if (sourceMethods.Count > 0)
+            {
+                var sourceKeys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var m in sourceMethods)
+                {
+                    sourceKeys.Add(MethodKey(m));
+                }
+                var deduped = new List<CachedMethod>(all.Count);
+                var dropped = 0;
+                foreach (var m in all)
+                {
+                    if (sourceKeys.Contains(MethodKey(m)))
+                    {
+                        dropped++;
+                        continue;
+                    }
+                    deduped.Add(m);
+                }
+                all = deduped;
+                all.AddRange(sourceMethods);
+                progress?.Invoke($"  {sourceMethods.Count:N0} source methods indexed; {dropped:N0} assembly entries shadowed");
+            }
+        }
+
         return all;
+    }
+
+    private static string MethodKey(CachedMethod m)
+    {
+        var sb = new System.Text.StringBuilder(m.FullName.Length + 32);
+        sb.Append(m.FullName);
+        sb.Append('(');
+        for (var i = 0; i < m.ParameterTypes.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(NormalizeTypeAlias(m.ParameterTypes[i]));
+        }
+        sb.Append(')');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Folds C# keyword aliases (<c>int</c>, <c>string</c>, ...) into their
+    /// canonical BCL names and drops nullable-annotation <c>?</c> markers so a
+    /// source-side TypeSyntax string and a metadata-side <see cref="Type.Name"/>
+    /// compare equal during dedupe. Operates token-by-token so generic argument
+    /// lists like <c>IEnumerable&lt;int?&gt;</c> normalize too.
+    /// </summary>
+    private static string NormalizeTypeAlias(string raw)
+    {
+        if (string.IsNullOrEmpty(raw))
+        {
+            return raw;
+        }
+
+        var sb = new System.Text.StringBuilder(raw.Length);
+        var token = new System.Text.StringBuilder();
+
+        void FlushToken()
+        {
+            if (token.Length == 0) return;
+            var t = token.ToString();
+            sb.Append(KeywordAlias(t) ?? t);
+            token.Clear();
+        }
+
+        foreach (var ch in raw)
+        {
+            if (char.IsLetterOrDigit(ch) || ch == '_')
+            {
+                token.Append(ch);
+            }
+            else if (ch == '?')
+            {
+                // Nullable annotations don't change CLR type identity. Reflection
+                // never surfaces them on reference types and renders Nullable<T>
+                // as a generic, so the source-side `?` has no peer to compare
+                // against — drop it for dedupe purposes.
+                FlushToken();
+            }
+            else
+            {
+                FlushToken();
+                sb.Append(ch);
+            }
+        }
+        FlushToken();
+        return sb.ToString();
+    }
+
+    private static string? KeywordAlias(string token) => token switch
+    {
+        "bool" => "Boolean",
+        "byte" => "Byte",
+        "sbyte" => "SByte",
+        "char" => "Char",
+        "decimal" => "Decimal",
+        "double" => "Double",
+        "float" => "Single",
+        "int" => "Int32",
+        "uint" => "UInt32",
+        "long" => "Int64",
+        "ulong" => "UInt64",
+        "short" => "Int16",
+        "ushort" => "UInt16",
+        "object" => "Object",
+        "string" => "String",
+        "void" => "Void",
+        "nint" => "IntPtr",
+        "nuint" => "UIntPtr",
+        _ => null,
+    };
+
+    /// <summary>
+    /// Returns every .cs file that the source pass would index for the given
+    /// context. Program.cs feeds these into <see cref="CacheStore.TryLoad"/>'s
+    /// manifest list so an edited file invalidates the cache automatically —
+    /// the CLI doesn't have to be re-invoked with <c>--rebuild</c>.
+    /// </summary>
+    public static IReadOnlyList<string> EnumerateSourceFiles(ProjectContext ctx)
+    {
+        var files = new List<string>();
+        foreach (var csproj in ProjectContextDetector.EnumerateCsprojs(ctx.OriginPath))
+        {
+            files.AddRange(CompileItemEnumerator.Enumerate(csproj));
+        }
+        return files;
+    }
+
+    private static string? ReadAssemblyName(string csprojPath)
+    {
+        if (!File.Exists(csprojPath))
+        {
+            return null;
+        }
+        try
+        {
+            var doc = System.Xml.Linq.XDocument.Load(csprojPath);
+            return doc.Descendants("AssemblyName")
+                .Select(e => e.Value.Trim())
+                .FirstOrDefault(s => !string.IsNullOrEmpty(s));
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
+        }
     }
 
     private static IReadOnlyList<string> PacksFor(SdkKind sdk) => sdk switch

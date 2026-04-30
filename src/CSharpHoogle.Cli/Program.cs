@@ -114,7 +114,13 @@ public static class Program
         ProjectDependencies? deps = ctx is null
             ? null
             : ProjectDependencyResolver.Resolve(ctx, msg => depMessages.Add(msg));
-        var manifestPaths = deps?.ManifestPaths ?? (IReadOnlyList<string>)Array.Empty<string>();
+        // Include both dep manifests (project.assets.json, packages.config) and
+        // every source file the source pass would walk. Editing any .cs in the
+        // project — or running dotnet restore — bumps a manifest mtime past the
+        // cache's, so TryLoad reports a miss and we rebuild on next invocation.
+        var manifestPaths = ((IEnumerable<string>)(deps?.ManifestPaths ?? Array.Empty<string>()))
+            .Concat(ctx is null ? Array.Empty<string>() : IndexBuilder.EnumerateSourceFiles(ctx))
+            .ToList();
 
         IReadOnlyList<CachedMethod> methods;
         if (rebuild || !CacheStore.TryLoad(ctx, manifestPaths, out methods))
