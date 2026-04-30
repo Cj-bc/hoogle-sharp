@@ -15,6 +15,7 @@ namespace CSharpHoogle.Cli;
 ///   csharp-hoogle --project &lt;path&gt;   pin context to a specific sln/slnx/csproj
 ///   csharp-hoogle --target-framework &lt;tfm&gt; / -f &lt;tfm&gt;
 ///                                       pin TFM (overrides on-disk detection)
+///   csharp-hoogle --max-results &lt;int&gt; Set maximum number of results (default: 50)");
 ///   csharp-hoogle --help                show usage
 /// </summary>
 public static class Program
@@ -49,6 +50,7 @@ public static class Program
         var showHelp = false;
         var listAssemblies = false;
         var json = false;
+        var maxResults = MaxResults;
         string? projectOverride = null;
         string? tfmOverride = null;
         var queryParts = new List<string>();
@@ -87,6 +89,18 @@ public static class Program
                         return 2;
                     }
                     tfmOverride = args[i];
+                    break;
+                case "--max-results":
+                    if (++i >= args.Length)
+                    {
+                        Console.Error.WriteLine($"--max-results requires a number argument.");
+                        return 2;
+                    }
+                    if (!int.TryParse(args[i], out maxResults))
+                    {
+                        Console.Error.WriteLine($"--max-results expects integer as argument, but received \"{args[i]}\".");
+                        return 2;
+                    }
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -158,8 +172,8 @@ public static class Program
         // Join multi-token queries so unquoted input like `A -> B` works.
         var query = string.Join(' ', queryParts);
         var matches = TypeQuery.LooksLikeSignatureQuery(query)
-            ? RunSignatureSearch(query, methods)
-            : RunSubstringSearch(query, methods);
+            ? RunSignatureSearch(query, methods, maxResults)
+            : RunSubstringSearch(query, methods, maxResults);
 
         if (matches is null)
         {
@@ -191,13 +205,13 @@ public static class Program
         return 0;
     }
 
-    private static IReadOnlyList<CachedMethod> RunSubstringSearch(string query, IReadOnlyList<CachedMethod> methods)
+    private static IReadOnlyList<CachedMethod> RunSubstringSearch(string query, IReadOnlyList<CachedMethod> methods, int maxResults)
         => methods
             .Where(m => m.FullName.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .Take(MaxResults)
+            .Take(maxResults)
             .ToList();
 
-    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods)
+    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods, int maxResults)
     {
         SignatureQuery sig;
         try
@@ -212,7 +226,7 @@ public static class Program
 
         return methods
             .Where(m => TypeQueryMatcher.Matches(sig, m))
-            .Take(MaxResults)
+            .Take(maxResults)
             .ToList();
     }
 
@@ -310,6 +324,7 @@ public static class Program
         Console.WriteLine("  --json                        Emit results as JSON on stdout (for piping into tools).");
         Console.WriteLine("  --project <path>              Pin context to a specific .sln/.slnx/.csproj file.");
         Console.WriteLine("  --target-framework <tfm>, -f  Pin TFM (e.g. net8.0); overrides on-disk detection.");
+        Console.WriteLine("  --max-results <int>           Set maximum number of results (default: 50)");
         Console.WriteLine("  --help                        Show this message.");
         Console.WriteLine();
         Console.WriteLine("Without overrides, csharp-hoogle walks up from the current directory looking for");
