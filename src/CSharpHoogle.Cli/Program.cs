@@ -99,6 +99,11 @@ public static class Program
                         Console.Error.WriteLine($"--max-results expects integer as argument, but received \"{args[i]}\".");
                         return 2;
                     }
+                    if (maxResults < 0)
+                    {
+                        Console.Error.WriteLine($"--max-results must be a non-negative integer, but received \"{args[i]}\".");
+                        return 2;
+                    }
                     break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal))
@@ -190,11 +195,11 @@ public static class Program
 
         if (json)
         {
-            PrintMatchesJson(maxResults == -1 ? matches : matches.Take(maxResults));
+            PrintMatchesJson(LimitMatches(matches, maxResults));
         }
         else
         {
-            foreach (var m in (maxResults == -1 ? matches : matches.Take(maxResults)))
+            foreach (var m in LimitMatches(matches, maxResults))
             {
                 PrintMatch(m);
             }
@@ -202,6 +207,9 @@ public static class Program
 
         return 0;
     }
+
+    internal static IEnumerable<CachedMethod> LimitMatches(IEnumerable<CachedMethod> matches, int maxResults)
+        => maxResults == -1 ? matches : matches.Take(maxResults);
 
     private static IReadOnlyList<CachedMethod> RunSubstringSearch(string query, IReadOnlyList<CachedMethod> methods)
         => methods
