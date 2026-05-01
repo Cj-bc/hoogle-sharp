@@ -15,13 +15,11 @@ namespace CSharpHoogle.Cli;
 ///   csharp-hoogle --project &lt;path&gt;   pin context to a specific sln/slnx/csproj
 ///   csharp-hoogle --target-framework &lt;tfm&gt; / -f &lt;tfm&gt;
 ///                                       pin TFM (overrides on-disk detection)
-///   csharp-hoogle --max-results &lt;int&gt; Set maximum number of results (default: 50)");
+///   csharp-hoogle --max-results &lt;int&gt; Set maximum number of results (default: no limit)");
 ///   csharp-hoogle --help                show usage
 /// </summary>
 public static class Program
 {
-    private const int MaxResults = 50;
-
     private static readonly JsonSerializerOptions JsonOut = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -50,7 +48,7 @@ public static class Program
         var showHelp = false;
         var listAssemblies = false;
         var json = false;
-        var maxResults = MaxResults;
+        var maxResults = -1; // -1: indicated no limitation
         string? projectOverride = null;
         string? tfmOverride = null;
         var queryParts = new List<string>();
@@ -172,8 +170,8 @@ public static class Program
         // Join multi-token queries so unquoted input like `A -> B` works.
         var query = string.Join(' ', queryParts);
         var matches = TypeQuery.LooksLikeSignatureQuery(query)
-            ? RunSignatureSearch(query, methods, maxResults)
-            : RunSubstringSearch(query, methods, maxResults);
+            ? RunSignatureSearch(query, methods)
+            : RunSubstringSearch(query, methods);
 
         if (matches is null)
         {
@@ -192,11 +190,11 @@ public static class Program
 
         if (json)
         {
-            PrintMatchesJson(matches);
+            PrintMatchesJson(maxResults == -1 ? matches : matches.Take(maxResults));
         }
         else
         {
-            foreach (var m in matches)
+            foreach (var m in (maxResults == -1 ? matches : matches.Take(maxResults)))
             {
                 PrintMatch(m);
             }
@@ -205,13 +203,12 @@ public static class Program
         return 0;
     }
 
-    private static IReadOnlyList<CachedMethod> RunSubstringSearch(string query, IReadOnlyList<CachedMethod> methods, int maxResults)
+    private static IReadOnlyList<CachedMethod> RunSubstringSearch(string query, IReadOnlyList<CachedMethod> methods)
         => methods
             .Where(m => m.FullName.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .Take(maxResults)
             .ToList();
 
-    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods, int maxResults)
+    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods)
     {
         SignatureQuery sig;
         try
@@ -226,7 +223,6 @@ public static class Program
 
         return methods
             .Where(m => TypeQueryMatcher.Matches(sig, m))
-            .Take(maxResults)
             .ToList();
     }
 
@@ -282,7 +278,7 @@ public static class Program
         Console.WriteLine($"Total: {groups.Count:N0} sources, {methods.Count:N0} methods");
     }
 
-    private static void PrintMatchesJson(IReadOnlyList<CachedMethod> matches)
+    private static void PrintMatchesJson(IEnumerable<CachedMethod> matches)
     {
         var projected = matches.Select(m => new
         {
@@ -324,7 +320,7 @@ public static class Program
         Console.WriteLine("  --json                        Emit results as JSON on stdout (for piping into tools).");
         Console.WriteLine("  --project <path>              Pin context to a specific .sln/.slnx/.csproj file.");
         Console.WriteLine("  --target-framework <tfm>, -f  Pin TFM (e.g. net8.0); overrides on-disk detection.");
-        Console.WriteLine("  --max-results <int>           Set maximum number of results (default: 50)");
+        Console.WriteLine("  --max-results <int>           Set maximum number of results (default: no limit)");
         Console.WriteLine("  --help                        Show this message.");
         Console.WriteLine();
         Console.WriteLine("Without overrides, csharp-hoogle walks up from the current directory looking for");
