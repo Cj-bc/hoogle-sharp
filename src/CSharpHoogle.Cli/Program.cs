@@ -122,6 +122,17 @@ public static class Program
             return 0;
         }
 
+        if (!string.IsNullOrEmpty(projectOverride) && Directory.Exists(projectOverride))
+        {
+            var resolved = ProjectContextDetector.ResolveProjectFromDirectory(projectOverride!, out var resolveError);
+            if (resolved is null)
+            {
+                Console.Error.WriteLine(resolveError);
+                return 2;
+            }
+            projectOverride = resolved;
+        }
+
         var ctx = ProjectContextDetector.Detect(Environment.CurrentDirectory, projectOverride, tfmOverride);
 
         // Resolve deps once up-front so manifest mtimes can drive cache invalidation

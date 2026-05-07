@@ -82,6 +82,45 @@ public static class ProjectContextDetector
         };
     }
 
+    /// <summary>
+    /// When --project receives a directory, find the project file inside it.
+    /// Priority slnx &gt; sln &gt; csproj. Multiple files at the winning priority
+    /// are ambiguous — caller must report and exit. Returns null with error set
+    /// when ambiguous or when nothing matches; the caller writes error to stderr.
+    /// Top-level only (not recursive), mirroring WalkUp's per-directory probe.
+    /// </summary>
+    public static string? ResolveProjectFromDirectory(string dir, out string? error)
+    {
+        error = null;
+
+        var slnx = Directory.GetFiles(dir, "*.slnx");
+        if (slnx.Length > 1)
+        {
+            error = $"Multiple .slnx files found in '{dir}': {string.Join(", ", slnx.Select(Path.GetFileName))}. Specify one explicitly with --project.";
+            return null;
+        }
+        if (slnx.Length == 1) return slnx[0];
+
+        var sln = Directory.GetFiles(dir, "*.sln");
+        if (sln.Length > 1)
+        {
+            error = $"Multiple .sln files found in '{dir}': {string.Join(", ", sln.Select(Path.GetFileName))}. Specify one explicitly with --project.";
+            return null;
+        }
+        if (sln.Length == 1) return sln[0];
+
+        var csproj = Directory.GetFiles(dir, "*.csproj");
+        if (csproj.Length > 1)
+        {
+            error = $"Multiple .csproj files found in '{dir}': {string.Join(", ", csproj.Select(Path.GetFileName))}. Specify one explicitly with --project.";
+            return null;
+        }
+        if (csproj.Length == 1) return csproj[0];
+
+        error = $"No project files (.slnx, .sln, .csproj) found in directory '{dir}'.";
+        return null;
+    }
+
     private static ProjectContext? ApplyTfmOverride(ProjectContext? ctx, string? tfmOverride)
     {
         if (string.IsNullOrEmpty(tfmOverride))

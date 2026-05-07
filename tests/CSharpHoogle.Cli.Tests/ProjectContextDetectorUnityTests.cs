@@ -78,6 +78,118 @@ public class ProjectContextDetectorUnityTests : IDisposable
     }
 
     [Fact]
+    public void ResolveProjectFromDirectory_PrefersSlnxOverSlnAndCsproj()
+    {
+        var dir = Path.Combine(_tempDir, "PriorityAll");
+        Directory.CreateDirectory(dir);
+        var slnx = Path.Combine(dir, "App.slnx");
+        var sln = Path.Combine(dir, "App.sln");
+        var csproj = Path.Combine(dir, "App.csproj");
+        File.WriteAllText(slnx, "<Solution/>");
+        File.WriteAllText(sln, "");
+        File.WriteAllText(csproj, "<Project/>");
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(error);
+        Assert.Equal(slnx, resolved);
+    }
+
+    [Fact]
+    public void ResolveProjectFromDirectory_PrefersSlnOverCsproj_WhenNoSlnx()
+    {
+        var dir = Path.Combine(_tempDir, "SlnOverCsproj");
+        Directory.CreateDirectory(dir);
+        var sln = Path.Combine(dir, "App.sln");
+        var csproj = Path.Combine(dir, "App.csproj");
+        File.WriteAllText(sln, "");
+        File.WriteAllText(csproj, "<Project/>");
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(error);
+        Assert.Equal(sln, resolved);
+    }
+
+    [Fact]
+    public void ResolveProjectFromDirectory_FallsBackToCsproj_WhenSolePresent()
+    {
+        var dir = Path.Combine(_tempDir, "OnlyCsproj");
+        Directory.CreateDirectory(dir);
+        var csproj = Path.Combine(dir, "App.csproj");
+        File.WriteAllText(csproj, "<Project/>");
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(error);
+        Assert.Equal(csproj, resolved);
+    }
+
+    [Fact]
+    public void ResolveProjectFromDirectory_ErrorsOnMultipleSlnx()
+    {
+        var dir = Path.Combine(_tempDir, "MultiSlnx");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "A.slnx"), "<Solution/>");
+        File.WriteAllText(Path.Combine(dir, "B.slnx"), "<Solution/>");
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(resolved);
+        Assert.NotNull(error);
+        Assert.Contains(".slnx", error);
+        Assert.Contains("A.slnx", error);
+        Assert.Contains("B.slnx", error);
+    }
+
+    [Fact]
+    public void ResolveProjectFromDirectory_ErrorsOnMultipleSln_WhenNoSlnx()
+    {
+        var dir = Path.Combine(_tempDir, "MultiSln");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "A.sln"), "");
+        File.WriteAllText(Path.Combine(dir, "B.sln"), "");
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(resolved);
+        Assert.NotNull(error);
+        Assert.Contains(".sln", error);
+        Assert.Contains("A.sln", error);
+        Assert.Contains("B.sln", error);
+    }
+
+    [Fact]
+    public void ResolveProjectFromDirectory_ErrorsOnMultipleCsproj_WhenNoSlnOrSlnx()
+    {
+        var dir = Path.Combine(_tempDir, "MultiCsproj");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "A.csproj"), "<Project/>");
+        File.WriteAllText(Path.Combine(dir, "B.csproj"), "<Project/>");
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(resolved);
+        Assert.NotNull(error);
+        Assert.Contains(".csproj", error);
+        Assert.Contains("A.csproj", error);
+        Assert.Contains("B.csproj", error);
+    }
+
+    [Fact]
+    public void ResolveProjectFromDirectory_ErrorsWhenNothingFound()
+    {
+        var dir = Path.Combine(_tempDir, "Empty");
+        Directory.CreateDirectory(dir);
+
+        var resolved = ProjectContextDetector.ResolveProjectFromDirectory(dir, out var error);
+
+        Assert.Null(resolved);
+        Assert.NotNull(error);
+        Assert.Contains("No project files", error);
+    }
+
+    [Fact]
     public void EnumerateCsprojs_ReturnsAllMembers_ForSlnxOrigin()
     {
         var slnDir = Path.Combine(_tempDir, "Solution");
