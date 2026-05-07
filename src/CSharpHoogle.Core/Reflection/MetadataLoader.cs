@@ -16,6 +16,13 @@ public sealed class MetadataLoader : IDisposable
     private readonly HashSet<string> _searchPaths;
 
     /// <summary>
+    /// Snapshot of the resolver's search paths. Internal-only — exposed for
+    /// regression tests that verify filename-based dedup. Production code
+    /// should not depend on this.
+    /// </summary>
+    internal IReadOnlyCollection<string> SearchPaths => _searchPaths;
+
+    /// <summary>
     /// Creates a loader whose resolver covers the runtime directory plus any
     /// additional <paramref name="extraSearchDirs"/> (e.g. Unity's Managed/ folder,
     /// the user's project output directory). Every <c>*.dll</c> found in those

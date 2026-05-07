@@ -156,4 +156,108 @@ public class MethodIndexBuilderTests
         Assert.Null(select.DeclaringType);
         Assert.Empty(select.TypeGenericParams!);
     }
+
+    [Fact]
+    public void BuildFromAssembly_SkipsMethodsWithUnresolvableSignatureReferences()
+    {
+        // Pre-fix regression: when a dep DLL exposes a method whose signature
+        // references an assembly missing from the resolver's search paths,
+        // signature decoding inside XmlDocId.MethodId / GetParameters threw
+        // FileNotFoundException and crashed the entire dep walk. The fix
+        // wraps BuildEntry per-method so just that method is dropped.
+        var tempDir = Path.Combine(
+            Path.GetTempPath(),
+            "hoogle-mib-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var libDir = Path.Combine(tempDir, "Lib");
+            Directory.CreateDirectory(libDir);
+            File.WriteAllText(Path.Combine(libDir, "Lib.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                    <AssemblyName>Lib</AssemblyName>
+                  </PropertyGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(libDir, "LibType.cs"), """
+                namespace Lib;
+                public class LibType { }
+                """);
+
+            var consumerDir = Path.Combine(tempDir, "Consumer");
+            Directory.CreateDirectory(consumerDir);
+            File.WriteAllText(Path.Combine(consumerDir, "Consumer.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net8.0</TargetFramework>
+                    <AssemblyName>Consumer</AssemblyName>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(consumerDir, "Bar.cs"), """
+                using Lib;
+                namespace Consumer;
+                public class Bar
+                {
+                    public void Use(LibType t) { }
+                    public int Plain() => 42;
+                }
+                """);
+
+            if (!RunDotnetBuild(consumerDir))
+            {
+                // dotnet build is environment-dependent; skip the assertion
+                // when it can't run rather than failing in CI without dotnet.
+                return;
+            }
+
+            // Copy ONLY Consumer.dll to an isolated dir so the resolver can't
+            // find Lib.dll alongside it. Mirrors the real-world failure mode:
+            // a NuGet package's DLL references an assembly we don't index.
+            var isolatedDir = Path.Combine(tempDir, "isolated");
+            Directory.CreateDirectory(isolatedDir);
+            var consumerDllSrc = Path.Combine(
+                consumerDir, "bin", "Debug", "net8.0", "Consumer.dll");
+            var isolatedDll = Path.Combine(isolatedDir, "Consumer.dll");
+            File.Copy(consumerDllSrc, isolatedDll);
+
+            using var loader = new MetadataLoader();
+            var asm = loader.LoadFromAssemblyPath(isolatedDll);
+            var docs = new InMemoryDocEntryRepository();
+
+            // Pre-fix: this throws FileNotFoundException for Bar.Use(LibType).
+            var entries = MethodIndexBuilder.BuildFromAssembly(asm, docs);
+
+            // Plain() doesn't reference Lib, so it survives.
+            // Use(LibType) is dropped because its signature can't be decoded.
+            Assert.Contains(entries, e => e.FullName == "Consumer.Bar.Plain");
+            Assert.DoesNotContain(entries, e => e.FullName == "Consumer.Bar.Use");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+    }
+
+    private static bool RunDotnetBuild(string projectDir)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("dotnet", "build -c Debug")
+        {
+            WorkingDirectory = projectDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        using var proc = System.Diagnostics.Process.Start(psi)!;
+        proc.WaitForExit();
+        return proc.ExitCode == 0;
+    }
 }
