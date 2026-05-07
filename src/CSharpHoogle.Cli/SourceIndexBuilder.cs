@@ -106,17 +106,99 @@ internal static class SourceIndexBuilder
                 .Select(p => p.Identifier.Text)
                 .ToArray() ?? Array.Empty<string>();
 
+            // Receiver only makes sense for instance methods. `static` and
+            // extension-method declarations (the latter detected by the
+            // `this` modifier on parameter 0) are skipped so the matcher's
+            // synthetic-receiver slot doesn't fire for them.
+            var isExtension = IsExtensionMethod(method);
+            var isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+            string? declaringType = null;
+            var typeGenericParams = Array.Empty<string>();
+            if (!isStatic && !isExtension)
+            {
+                var receiver = GetDeclaringTypeRef(method);
+                if (receiver is not null)
+                {
+                    declaringType = receiver.Value.Formatted;
+                    typeGenericParams = receiver.Value.GenericParams;
+                }
+            }
+
             sink.Add(new CachedMethod(
                 FullName: fullName,
                 ReturnType: FormatTypeSyntax(method.ReturnType),
                 ParameterTypes: paramTypes,
                 GenericParams: generics,
-                IsExtensionMethod: IsExtensionMethod(method),
+                IsExtensionMethod: isExtension,
                 DocUrl: "",
                 Summary: ExtractSummary(method),
                 Source: source,
-                RequiredParameterCount: requiredCount));
+                RequiredParameterCount: requiredCount,
+                DeclaringType: declaringType,
+                TypeGenericParams: typeGenericParams));
         }
+    }
+
+    /// <summary>
+    /// Returns the immediately-containing type rendered the same way
+    /// <see cref="FormatTypeSyntax"/> renders other types — identifier plus
+    /// optional <c>&lt;T1, T2&gt;</c> from its <c>TypeParameterList</c>.
+    /// Returns null when no class/struct/record/interface ancestor exists
+    /// (e.g. methods inside top-level statements).
+    /// </summary>
+    private static (string Formatted, string[] GenericParams)? GetDeclaringTypeRef(MethodDeclarationSyntax method)
+    {
+        SyntaxNode? parent = method.Parent;
+        while (parent is not null)
+        {
+            switch (parent)
+            {
+                case ClassDeclarationSyntax cls:
+                    return (FormatTypeRef(cls.Identifier.Text, cls.TypeParameterList),
+                            ExtractTypeParamNames(cls.TypeParameterList));
+                case StructDeclarationSyntax st:
+                    return (FormatTypeRef(st.Identifier.Text, st.TypeParameterList),
+                            ExtractTypeParamNames(st.TypeParameterList));
+                case RecordDeclarationSyntax rd:
+                    return (FormatTypeRef(rd.Identifier.Text, rd.TypeParameterList),
+                            ExtractTypeParamNames(rd.TypeParameterList));
+                case InterfaceDeclarationSyntax iface:
+                    return (FormatTypeRef(iface.Identifier.Text, iface.TypeParameterList),
+                            ExtractTypeParamNames(iface.TypeParameterList));
+                case BaseNamespaceDeclarationSyntax:
+                case CompilationUnitSyntax:
+                    return null;
+            }
+            parent = parent.Parent;
+        }
+        return null;
+    }
+
+    private static string FormatTypeRef(string name, TypeParameterListSyntax? typeParams)
+    {
+        if (typeParams is null || typeParams.Parameters.Count == 0)
+        {
+            return name;
+        }
+        var sb = new StringBuilder(name.Length + typeParams.Parameters.Count * 6);
+        sb.Append(name);
+        sb.Append('<');
+        for (var i = 0; i < typeParams.Parameters.Count; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append(typeParams.Parameters[i].Identifier.Text);
+        }
+        sb.Append('>');
+        return sb.ToString();
+    }
+
+    private static string[] ExtractTypeParamNames(TypeParameterListSyntax? typeParams)
+    {
+        if (typeParams is null || typeParams.Parameters.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+        return typeParams.Parameters.Select(p => p.Identifier.Text).ToArray();
     }
 
     private static bool IsAccessible(MethodDeclarationSyntax method)

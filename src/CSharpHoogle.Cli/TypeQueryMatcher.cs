@@ -9,6 +9,13 @@ namespace CSharpHoogle.Cli;
 ///   <item>Query arity must lie between the method's required count and its
 ///     total count: trailing optional parameters (<c>= default</c>) may be
 ///     omitted from the query, but every required parameter must be matched.</item>
+///   <item>Instance methods get a synthetic optional <em>receiver</em> slot
+///     (the formatted declaring type) prepended to the candidate pool, so
+///     <c>Dictionary&lt;TKey,TValue&gt; -&gt; TKey -&gt; bool</c> matches
+///     <c>bool Dictionary&lt;TKey,TValue&gt;.ContainsKey(TKey)</c>. The slot
+///     is optional — the same query without the receiver still matches.
+///     Static and extension methods do not have this slot (extension methods
+///     already place their receiver in parameter[0]).</item>
 ///   <item>Parameter order is not significant at the top level: the matcher
 ///     searches for any one-to-one assignment of query parameters to method
 ///     parameters that satisfies the type rules. Generic arguments inside a
@@ -17,7 +24,9 @@ namespace CSharpHoogle.Cli;
 ///   <item>Generic-parameter-like names on either side act as unification variables:
 ///     repeated occurrences of the same variable must bind to the same type.
 ///     So <c>T -&gt; T</c> matches <c>int -&gt; int</c> but not <c>int -&gt; string</c>,
-///     while <c>T -&gt; U</c> matches both.</item>
+///     while <c>T -&gt; U</c> matches both. Type-level generics from the declaring
+///     type (e.g. <c>TKey</c> from <c>Dictionary&lt;TKey,TValue&gt;</c>) act as
+///     method-side wildcards alongside method-level generics.</item>
 ///   <item>Otherwise, simple names must match case-insensitively and generic args / array dims must match structurally.</item>
 /// </list>
 /// </summary>
@@ -47,15 +56,41 @@ public static class TypeQueryMatcher
 
     public static bool Matches(SignatureQuery query, CachedMethod method)
     {
+        // Instance methods get a synthetic, OPTIONAL receiver slot prepended
+        // to the candidate pool so a query like `Dictionary<TKey,TValue> -> TKey -> bool`
+        // matches `bool Dictionary<TKey,TValue>.ContainsKey(TKey)`. Static
+        // and extension methods leave DeclaringType null so this slot is absent.
+        var hasReceiver = !string.IsNullOrEmpty(method.DeclaringType);
+        var totalSlots = method.ParameterTypes.Length + (hasReceiver ? 1 : 0);
+
+        // The receiver is optional — it does not raise the lower bound, only
+        // the upper bound. So the user may include or omit it freely.
         if (query.Parameters.Count < method.RequiredParameterCount
-            || query.Parameters.Count > method.ParameterTypes.Length)
+            || query.Parameters.Count > totalSlots)
         {
             return false;
         }
 
-        var methodGenerics = method.GenericParams;
+        // Type-level generics (e.g. `TKey`, `TValue` from `Dictionary<TKey,TValue>`)
+        // act as method-side wildcards alongside the method's own generic params,
+        // so a `TKey` in the receiver and a `TKey` in a parameter unify to the
+        // same bound type.
+        var typeGenerics = method.TypeGenericParams ?? Array.Empty<string>();
+        var methodGenerics = typeGenerics.Length == 0
+            ? method.GenericParams
+            : method.GenericParams.Concat(typeGenerics).ToArray();
 
-        var methodParams = new TypeRef[method.ParameterTypes.Length];
+        var receiverOffset = hasReceiver ? 1 : 0;
+        var slots = new TypeRef[totalSlots];
+        if (hasReceiver)
+        {
+            var parsedReceiver = SafeParse(method.DeclaringType!);
+            if (parsedReceiver is null)
+            {
+                return false;
+            }
+            slots[0] = parsedReceiver;
+        }
         for (var i = 0; i < method.ParameterTypes.Length; i++)
         {
             var parsed = SafeParse(method.ParameterTypes[i]);
@@ -63,7 +98,7 @@ public static class TypeQueryMatcher
             {
                 return false;
             }
-            methodParams[i] = parsed;
+            slots[receiverOffset + i] = parsed;
         }
 
         var ret = SafeParse(method.ReturnType);
@@ -76,8 +111,8 @@ public static class TypeQueryMatcher
         // as a whole — variables carry their meaning across parameters and
         // return type.
         var bindings = new UnificationState();
-        var used = new bool[methodParams.Length];
-        return TryAssignParameters(query, methodParams, ret, methodGenerics, method.RequiredParameterCount, bindings, used, 0);
+        var used = new bool[slots.Length];
+        return TryAssignParameters(query, slots, ret, methodGenerics, receiverOffset, method.RequiredParameterCount, bindings, used, 0);
     }
 
     /// <summary>
@@ -93,6 +128,7 @@ public static class TypeQueryMatcher
         IReadOnlyList<TypeRef> methodParams,
         TypeRef methodReturn,
         IReadOnlyList<string> methodGenerics,
+        int receiverOffset,
         int requiredCount,
         UnificationState bindings,
         bool[] used,
@@ -100,10 +136,11 @@ public static class TypeQueryMatcher
     {
         if (qIndex == query.Parameters.Count)
         {
-            // Any unbound method parameter must be in the trailing optional
-            // region; required slots without a query match would mean the
-            // user dropped a mandatory argument.
-            for (var j = 0; j < requiredCount; j++)
+            // Required slots live at [receiverOffset, receiverOffset + requiredCount).
+            // The receiver slot (index 0 when present) is always optional, and
+            // trailing optional parameters sit past the required range — both
+            // may go unmatched without invalidating the assignment.
+            for (var j = receiverOffset; j < receiverOffset + requiredCount; j++)
             {
                 if (!used[j]) return false;
             }
@@ -119,7 +156,7 @@ public static class TypeQueryMatcher
             if (MatchType(queryParam, methodParams[j], methodGenerics, bindings))
             {
                 used[j] = true;
-                if (TryAssignParameters(query, methodParams, methodReturn, methodGenerics, requiredCount, bindings, used, qIndex + 1))
+                if (TryAssignParameters(query, methodParams, methodReturn, methodGenerics, receiverOffset, requiredCount, bindings, used, qIndex + 1))
                 {
                     return true;
                 }

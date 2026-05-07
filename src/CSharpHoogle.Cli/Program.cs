@@ -302,6 +302,8 @@ public static class Program
         var projected = matches.Select(m => new
         {
             fullName = m.FullName,
+            declaringType = m.DeclaringType,
+            typeGenericParams = m.TypeGenericParams ?? Array.Empty<string>(),
             returnType = m.ReturnType,
             parameterTypes = m.ParameterTypes,
             genericParams = m.GenericParams,
