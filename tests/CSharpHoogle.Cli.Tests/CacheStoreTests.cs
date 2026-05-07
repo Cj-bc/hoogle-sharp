@@ -5,11 +5,11 @@ namespace CSharpHoogle.Cli.Tests;
 public class CacheStoreTests
 {
     [Fact]
-    public void GetCachePath_BumpedToSchemaV6()
+    public void GetCachePath_BumpedToSchemaV7()
     {
         var ctx = new ProjectContext("net8.0", SdkKind.Default, "/some/path/Foo.csproj");
-        var path = CacheStore.GetCachePath(ctx);
-        Assert.EndsWith(".v6.json", path);
+        var path = CacheStore.GetCachePath(ctx, CacheBucket.Bcl);
+        Assert.EndsWith(".v7.json", path);
     }
 
     [Fact]
@@ -18,66 +18,138 @@ public class CacheStoreTests
         var a = new ProjectContext("net8.0", SdkKind.Default, "/projects/AppA/AppA.csproj");
         var b = new ProjectContext("net8.0", SdkKind.Default, "/projects/AppB/AppB.csproj");
 
-        Assert.NotEqual(CacheStore.GetCachePath(a), CacheStore.GetCachePath(b));
+        Assert.NotEqual(
+            CacheStore.GetCachePath(a, CacheBucket.Bcl),
+            CacheStore.GetCachePath(b, CacheBucket.Bcl));
     }
 
     [Fact]
     public void GetCachePath_IncludesSdk_WhenNonDefault()
     {
         var web = new ProjectContext("net8.0", SdkKind.Web, "/x/Web.csproj");
-        var path = CacheStore.GetCachePath(web);
+        var path = CacheStore.GetCachePath(web, CacheBucket.Bcl);
         Assert.Contains("net8.0-web-", path);
     }
 
     [Fact]
-    public void TryLoad_ReturnsFalse_WhenManifestNewerThanCache()
+    public void GetCachePath_DistinguishesBuckets()
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), "hoogle-cache-tests-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        try
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, "/x/App.csproj");
+        var bcl = CacheStore.GetCachePath(ctx, CacheBucket.Bcl);
+        var deps = CacheStore.GetCachePath(ctx, CacheBucket.Deps);
+        var source = CacheStore.GetCachePath(ctx, CacheBucket.Source);
+
+        Assert.Contains("-bcl.", bcl);
+        Assert.Contains("-deps.", deps);
+        Assert.Contains("-source.", source);
+        Assert.NotEqual(bcl, deps);
+        Assert.NotEqual(bcl, source);
+        Assert.NotEqual(deps, source);
+    }
+
+    [Fact]
+    public void TryLoadDeps_ReturnsFalse_WhenManifestNewerThanCache()
+    {
+        WithTempCtx((tempDir, ctx) =>
         {
-            var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(tempDir, "App.csproj"));
+            CacheStore.SaveDeps(ctx, new[] { Sample("Test.X.Y") });
 
-            // Save a real cache so the path exists.
-            CacheStore.Save(ctx, new[]
-            {
-                new CachedMethod(
-                    "Test.X.Y",
-                    "void",
-                    Array.Empty<string>(),
-                    Array.Empty<string>(),
-                    false,
-                    "",
-                    null,
-                    new MethodSource("assembly", "Test"),
-                    RequiredParameterCount: 0)
-            });
-
-            var cachePath = CacheStore.GetCachePath(ctx);
+            var cachePath = CacheStore.GetCachePath(ctx, CacheBucket.Deps);
             Assert.True(File.Exists(cachePath));
 
-            // Manifest with a newer mtime than the cache file.
             var manifest = Path.Combine(tempDir, "project.assets.json");
             File.WriteAllText(manifest, "{}");
             File.SetLastWriteTimeUtc(manifest, File.GetLastWriteTimeUtc(cachePath).AddMinutes(1));
 
-            var hit = CacheStore.TryLoad(ctx, new[] { manifest }, out var methods);
-            Assert.False(hit);
-            Assert.Empty(methods);
+            Assert.False(CacheStore.TryLoadDeps(ctx, new[] { manifest }, out var stale));
+            Assert.Empty(stale);
 
-            // With no manifest list it should hit.
-            var hitNoManifests = CacheStore.TryLoad(ctx, Array.Empty<string>(), out var methods2);
-            Assert.True(hitNoManifests);
-            Assert.NotEmpty(methods2);
+            Assert.True(CacheStore.TryLoadDeps(ctx, Array.Empty<string>(), out var hit));
+            Assert.NotEmpty(hit);
+        });
+    }
+
+    [Fact]
+    public void TryLoadSource_ReturnsFalse_WhenSourceNewerThanCache()
+    {
+        WithTempCtx((tempDir, ctx) =>
+        {
+            CacheStore.SaveSource(ctx, new[] { Sample("App.Greeter.Hello") });
+
+            var cachePath = CacheStore.GetCachePath(ctx, CacheBucket.Source);
+            var src = Path.Combine(tempDir, "Greeter.cs");
+            File.WriteAllText(src, "// stub");
+            File.SetLastWriteTimeUtc(src, File.GetLastWriteTimeUtc(cachePath).AddMinutes(1));
+
+            Assert.False(CacheStore.TryLoadSource(ctx, new[] { src }, out var stale));
+            Assert.Empty(stale);
+        });
+    }
+
+    [Fact]
+    public void TryLoadBcl_IgnoresManifestAndSourceChanges()
+    {
+        WithTempCtx((tempDir, ctx) =>
+        {
+            CacheStore.SaveBcl(ctx, new[] { Sample("System.X.Y") });
+
+            // Touch a "manifest" and a "source" — neither is passed to
+            // TryLoadBcl, so both must be irrelevant. BCL only invalidates on
+            // --rebuild (i.e. the caller skipping the load entirely).
+            var cachePath = CacheStore.GetCachePath(ctx, CacheBucket.Bcl);
+            var manifest = Path.Combine(tempDir, "project.assets.json");
+            File.WriteAllText(manifest, "{}");
+            File.SetLastWriteTimeUtc(manifest, File.GetLastWriteTimeUtc(cachePath).AddMinutes(1));
+
+            Assert.True(CacheStore.TryLoadBcl(ctx, out var hit));
+            Assert.NotEmpty(hit);
+        });
+    }
+
+    [Fact]
+    public void TryLoadDeps_HitsOnEmptyCache()
+    {
+        // A project with zero deps still saves an empty deps cache; that's a
+        // legitimate "all known, nothing to walk" state and must read back as
+        // a hit so the caller doesn't keep re-resolving deps.
+        WithTempCtx((_, ctx) =>
+        {
+            CacheStore.SaveDeps(ctx, Array.Empty<CachedMethod>());
+
+            Assert.True(CacheStore.TryLoadDeps(ctx, Array.Empty<string>(), out var hit));
+            Assert.Empty(hit);
+        });
+    }
+
+    private static CachedMethod Sample(string fullName) => new(
+        fullName,
+        "void",
+        Array.Empty<string>(),
+        Array.Empty<string>(),
+        false,
+        "",
+        null,
+        new MethodSource("assembly", "Test"),
+        RequiredParameterCount: 0);
+
+    private static void WithTempCtx(Action<string, ProjectContext> body)
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "hoogle-cache-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(tempDir, "App.csproj"));
+        try
+        {
+            body(tempDir, ctx);
         }
         finally
         {
-            // Cleanup the cache file too.
-            var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(tempDir, "App.csproj"));
-            var cachePath = CacheStore.GetCachePath(ctx);
-            if (File.Exists(cachePath))
+            foreach (var bucket in new[] { CacheBucket.Bcl, CacheBucket.Deps, CacheBucket.Source })
             {
-                File.Delete(cachePath);
+                var p = CacheStore.GetCachePath(ctx, bucket);
+                if (File.Exists(p))
+                {
+                    File.Delete(p);
+                }
             }
             if (Directory.Exists(tempDir))
             {

@@ -6,6 +6,22 @@ using System.Text.Json;
 namespace CSharpHoogle.Cli;
 
 /// <summary>
+/// Which sub-cache the call refers to. The CLI splits its index into three
+/// independently-invalidated buckets so a source edit doesn't force a BCL or
+/// dependency rebuild and a <c>dotnet restore</c> doesn't force a source
+/// rebuild.
+/// </summary>
+public enum CacheBucket
+{
+    /// <summary>BCL/reference-pack assemblies — keyed by TFM/SDK only.</summary>
+    Bcl,
+    /// <summary>NuGet/project-reference dlls — invalidated by manifest mtimes.</summary>
+    Deps,
+    /// <summary>Methods parsed from .cs files — invalidated by source mtimes.</summary>
+    Source,
+}
+
+/// <summary>
 /// Reads and writes the CLI's on-disk index cache. With a <see cref="ProjectContext"/>
 /// the cache is keyed by (TFM, SDK kind, origin-hash) so each project keeps its own
 /// index even when several projects share a TFM. With no context, falls back to a
@@ -14,7 +30,7 @@ namespace CSharpHoogle.Cli;
 public static class CacheStore
 {
     private const string AppFolderName = "csharp-hoogle";
-    private const int SchemaVersion = 6;
+    private const int SchemaVersion = 7;
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -22,9 +38,9 @@ public static class CacheStore
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static string GetCachePath() => GetCachePath(null);
+    public static string GetCachePath(CacheBucket bucket) => GetCachePath(null, bucket);
 
-    public static string GetCachePath(ProjectContext? ctx)
+    public static string GetCachePath(ProjectContext? ctx, CacheBucket bucket)
     {
         var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (string.IsNullOrEmpty(root))
@@ -37,28 +53,45 @@ public static class CacheStore
 
         var dir = Path.Combine(root, AppFolderName);
         var key = ctx is null ? GetRuntimeTag() : GetContextTag(ctx);
-        return Path.Combine(dir, $"index-{key}.v{SchemaVersion}.json");
+        return Path.Combine(dir, $"index-{key}-{BucketTag(bucket)}.v{SchemaVersion}.json");
     }
 
-    public static bool TryLoad(out IReadOnlyList<CachedMethod> methods) =>
-        TryLoad(null, Array.Empty<string>(), out methods);
+    public static bool TryLoadBcl(ProjectContext? ctx, out IReadOnlyList<CachedMethod> methods)
+        => TryLoadInternal(ctx, CacheBucket.Bcl, Array.Empty<string>(), out methods);
 
-    public static bool TryLoad(ProjectContext? ctx, out IReadOnlyList<CachedMethod> methods) =>
-        TryLoad(ctx, Array.Empty<string>(), out methods);
-
-    /// <summary>
-    /// Loads the cached index, treating it as a miss when any path in
-    /// <paramref name="manifestPaths"/> (typically project.assets.json /
-    /// packages.config) has a newer mtime than the cache file. This lets a
-    /// fresh <c>dotnet restore</c> auto-invalidate the cache without the user
-    /// having to pass <c>--rebuild</c>.
-    /// </summary>
-    public static bool TryLoad(
+    public static bool TryLoadDeps(
         ProjectContext? ctx,
         IReadOnlyList<string> manifestPaths,
         out IReadOnlyList<CachedMethod> methods)
+        => TryLoadInternal(ctx, CacheBucket.Deps, manifestPaths, out methods);
+
+    public static bool TryLoadSource(
+        ProjectContext? ctx,
+        IReadOnlyList<string> sourceFiles,
+        out IReadOnlyList<CachedMethod> methods)
+        => TryLoadInternal(ctx, CacheBucket.Source, sourceFiles, out methods);
+
+    public static void SaveBcl(ProjectContext? ctx, IReadOnlyList<CachedMethod> methods)
+        => SaveInternal(ctx, CacheBucket.Bcl, methods);
+
+    public static void SaveDeps(ProjectContext? ctx, IReadOnlyList<CachedMethod> methods)
+        => SaveInternal(ctx, CacheBucket.Deps, methods);
+
+    public static void SaveSource(ProjectContext? ctx, IReadOnlyList<CachedMethod> methods)
+        => SaveInternal(ctx, CacheBucket.Source, methods);
+
+    /// <summary>
+    /// Treats the cache as a miss when any path in <paramref name="invalidationPaths"/>
+    /// has a newer mtime than the cache file. An empty cache file (legitimately
+    /// no entries — e.g. a project with zero deps) is a hit.
+    /// </summary>
+    private static bool TryLoadInternal(
+        ProjectContext? ctx,
+        CacheBucket bucket,
+        IReadOnlyList<string> invalidationPaths,
+        out IReadOnlyList<CachedMethod> methods)
     {
-        var path = GetCachePath(ctx);
+        var path = GetCachePath(ctx, bucket);
         if (!File.Exists(path))
         {
             methods = Array.Empty<CachedMethod>();
@@ -66,9 +99,9 @@ public static class CacheStore
         }
 
         var cacheMtime = File.GetLastWriteTimeUtc(path);
-        foreach (var manifest in manifestPaths)
+        foreach (var p in invalidationPaths)
         {
-            if (File.Exists(manifest) && File.GetLastWriteTimeUtc(manifest) > cacheMtime)
+            if (File.Exists(p) && File.GetLastWriteTimeUtc(p) > cacheMtime)
             {
                 methods = Array.Empty<CachedMethod>();
                 return false;
@@ -80,7 +113,7 @@ public static class CacheStore
             using var stream = File.OpenRead(path);
             var loaded = JsonSerializer.Deserialize<List<CachedMethod>>(stream, Json);
             methods = loaded ?? new List<CachedMethod>();
-            return methods.Count > 0;
+            return true;
         }
         catch (JsonException)
         {
@@ -90,16 +123,25 @@ public static class CacheStore
         }
     }
 
-    public static void Save(IReadOnlyList<CachedMethod> methods) => Save(null, methods);
-
-    public static void Save(ProjectContext? ctx, IReadOnlyList<CachedMethod> methods)
+    private static void SaveInternal(
+        ProjectContext? ctx,
+        CacheBucket bucket,
+        IReadOnlyList<CachedMethod> methods)
     {
-        var path = GetCachePath(ctx);
+        var path = GetCachePath(ctx, bucket);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         using var stream = File.Create(path);
         JsonSerializer.Serialize(stream, methods, Json);
     }
+
+    private static string BucketTag(CacheBucket bucket) => bucket switch
+    {
+        CacheBucket.Bcl => "bcl",
+        CacheBucket.Deps => "deps",
+        CacheBucket.Source => "source",
+        _ => throw new ArgumentOutOfRangeException(nameof(bucket), bucket, null),
+    };
 
     private static string GetContextTag(ProjectContext ctx)
     {

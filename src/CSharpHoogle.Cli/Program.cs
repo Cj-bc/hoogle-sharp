@@ -135,30 +135,83 @@ public static class Program
 
         var ctx = ProjectContextDetector.Detect(Environment.CurrentDirectory, projectOverride, tfmOverride);
 
-        // Resolve deps once up-front so manifest mtimes can drive cache invalidation
-        // and the same dep set feeds RebuildAndSave on a miss. Capture progress into
-        // a buffer so cache hits stay quiet; flush only on a rebuild.
+        // Resolve deps once up-front so manifest mtimes can drive the deps-cache
+        // invalidation and the same dep set feeds the dep rebuild path on a miss.
+        // Capture progress into a buffer so cache hits stay quiet; flush only when
+        // we actually rebuild a bucket below.
         var depMessages = new List<string>();
         ProjectDependencies? deps = ctx is null
             ? null
             : ProjectDependencyResolver.Resolve(ctx, msg => depMessages.Add(msg));
-        // Include both dep manifests (project.assets.json, packages.config) and
-        // every source file the source pass would walk. Editing any .cs in the
-        // project — or running dotnet restore — bumps a manifest mtime past the
-        // cache's, so TryLoad reports a miss and we rebuild on next invocation.
-        var manifestPaths = ((IEnumerable<string>)(deps?.ManifestPaths ?? Array.Empty<string>()))
-            .Concat(ctx is null ? Array.Empty<string>() : IndexBuilder.EnumerateSourceFiles(ctx))
-            .ToList();
+        var depManifests = deps?.ManifestPaths ?? Array.Empty<string>();
+        var sourceFiles = ctx is null
+            ? Array.Empty<string>()
+            : IndexBuilder.EnumerateSourceFiles(ctx);
 
-        IReadOnlyList<CachedMethod> methods;
-        if (rebuild || !CacheStore.TryLoad(ctx, manifestPaths, out methods))
+        // Three independently-invalidated buckets: BCL is keyed by ctx alone
+        // (rebuild requires --rebuild), deps invalidates on manifest mtime
+        // (project.assets.json, packages.config), source invalidates on .cs mtime.
+        // Edits to a .cs file rebuild only the source bucket; dotnet restore
+        // rebuilds only deps.
+        // `rebuild` short-circuits the TryLoad calls below, so initialize each
+        // out-target up front to keep the compiler's definite-assignment check
+        // happy. Empty lists also serve as the natural default when a bucket
+        // isn't applicable (no deps, no ctx).
+        IReadOnlyList<CachedMethod> bclMethods = Array.Empty<CachedMethod>();
+        IReadOnlyList<CachedMethod> depMethods = Array.Empty<CachedMethod>();
+        IReadOnlyList<CachedMethod> sourceMethods = Array.Empty<CachedMethod>();
+
+        var bclMiss = rebuild || !CacheStore.TryLoadBcl(ctx, out bclMethods);
+        var depsMiss = false;
+        if (deps is not null)
         {
+            depsMiss = rebuild || !CacheStore.TryLoadDeps(ctx, depManifests, out depMethods);
+        }
+        var sourceMiss = false;
+        if (ctx is not null)
+        {
+            sourceMiss = rebuild || !CacheStore.TryLoadSource(ctx, sourceFiles, out sourceMethods);
+        }
+
+        var anyMiss = bclMiss || depsMiss || sourceMiss;
+        if (anyMiss)
+        {
+            if (ctx is not null)
+            {
+                Console.Error.WriteLine($"Detected project: {ctx.Tfm} ({ctx.Sdk}) from {ctx.OriginPath}");
+            }
             foreach (var m in depMessages)
             {
                 Console.Error.WriteLine(m);
             }
-            methods = RebuildAndSave(ctx, deps);
+
+            var sw = Stopwatch.StartNew();
+            void Log(string msg) => Console.Error.WriteLine(msg);
+
+            if (bclMiss)
+            {
+                bclMethods = IndexBuilder.BuildBclMethods(ctx, Log);
+                CacheStore.SaveBcl(ctx, bclMethods);
+            }
+            if (depsMiss)
+            {
+                depMethods = IndexBuilder.BuildDepMethods(ctx, deps!, Log);
+                CacheStore.SaveDeps(ctx, depMethods);
+            }
+            if (sourceMiss)
+            {
+                sourceMethods = IndexBuilder.BuildSourceMethods(ctx!, Log);
+                CacheStore.SaveSource(ctx, sourceMethods);
+            }
+            sw.Stop();
+            var total = bclMethods.Count + depMethods.Count + sourceMethods.Count;
+            Console.Error.WriteLine($"Cached {total:N0} methods ({DescribeRebuiltBuckets(bclMiss, depsMiss, sourceMiss)}) in {sw.Elapsed.TotalSeconds:F1}s");
         }
+
+        var assemblyMethods = new List<CachedMethod>(bclMethods.Count + depMethods.Count);
+        assemblyMethods.AddRange(bclMethods);
+        assemblyMethods.AddRange(depMethods);
+        var methods = IndexBuilder.Dedupe(assemblyMethods, sourceMethods);
 
         if (listAssemblies)
         {
@@ -245,18 +298,13 @@ public static class Program
             .ToList();
     }
 
-    private static IReadOnlyList<CachedMethod> RebuildAndSave(ProjectContext? ctx, ProjectDependencies? deps)
+    private static string DescribeRebuiltBuckets(bool bcl, bool deps, bool source)
     {
-        if (ctx is not null)
-        {
-            Console.Error.WriteLine($"Detected project: {ctx.Tfm} ({ctx.Sdk}) from {ctx.OriginPath}");
-        }
-        var sw = Stopwatch.StartNew();
-        var methods = IndexBuilder.BuildIndex(ctx, deps, msg => Console.Error.WriteLine(msg));
-        CacheStore.Save(ctx, methods);
-        sw.Stop();
-        Console.Error.WriteLine($"Cached {methods.Count:N0} methods in {sw.Elapsed.TotalSeconds:F1}s → {CacheStore.GetCachePath(ctx)}");
-        return methods;
+        var parts = new List<string>(3);
+        if (bcl) parts.Add("bcl");
+        if (deps) parts.Add("deps");
+        if (source) parts.Add("source");
+        return parts.Count == 0 ? "no buckets" : "rebuilt: " + string.Join(", ", parts);
     }
 
     private static void PrintMatch(CachedMethod m)

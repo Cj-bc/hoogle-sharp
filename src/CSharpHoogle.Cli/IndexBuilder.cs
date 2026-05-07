@@ -7,111 +7,43 @@ using CSharpHoogle.Core.Storage;
 namespace CSharpHoogle.Cli;
 
 /// <summary>
-/// Composes Phase 1 (DocEntry index) and Phase 2 (MethodEntry walk) and
-/// projects the result into the CLI's flat <see cref="CachedMethod"/> shape.
+/// Builds the CLI's flat <see cref="CachedMethod"/> list. Split into three
+/// independently-callable passes so the cache can invalidate one bucket
+/// (BCL / deps / source) without forcing a full rebuild of the others.
 /// </summary>
 public static class IndexBuilder
 {
     /// <summary>
-    /// Builds the BCL-only index. Kept for callers and tests that don't supply
-    /// a dependency set; routes through <see cref="BuildIndex"/>.
+    /// Walks the BCL/reference-pack assemblies for <paramref name="ctx"/>, or the
+    /// running runtime when no context is given. Returns one tagged
+    /// <see cref="CachedMethod"/> per public method discovered. No dep or source
+    /// passes — those live in <see cref="BuildDepMethods"/> /
+    /// <see cref="BuildSourceMethods"/>.
     /// </summary>
-    public static IReadOnlyList<CachedMethod> BuildBclIndex(
-        ProjectContext? ctx = null,
-        Action<string>? progress = null)
-        => BuildIndex(ctx, deps: null, progress);
-
-    /// <summary>
-    /// Builds the BCL index and, when <paramref name="deps"/> is non-null,
-    /// walks each dependency assembly into the same index — tagged with
-    /// the dep's <see cref="MethodSource"/>. The MetadataLoader is seeded
-    /// with both BCL and dep directories so cross-package references resolve.
-    /// </summary>
-    public static IReadOnlyList<CachedMethod> BuildIndex(
+    public static IReadOnlyList<CachedMethod> BuildBclMethods(
         ProjectContext? ctx,
-        ProjectDependencies? deps,
         Action<string>? progress = null)
     {
         progress?.Invoke("Parsing BCL XML docs...");
 
         var docs = new InMemoryDocEntryRepository();
-        IReadOnlyList<string> refPackDirs = Array.Empty<string>();
-
+        var (docDirs, walkDirs, fromRefPacks) = ResolveBclDirs(ctx);
         if (ctx is not null
-            && ProjectContextDetector.TryParseNetTfm(ctx.Tfm, out var maj, out var min))
+            && ProjectContextDetector.TryParseNetTfm(ctx.Tfm, out _, out _)
+            && !fromRefPacks)
         {
-            refPackDirs = BclIndexBuilder.ResolveDocDirs(maj, min, PacksFor(ctx.Sdk));
-            if (refPackDirs.Count == 0)
-            {
-                progress?.Invoke($"  no reference pack found for {ctx.Tfm} ({ctx.Sdk}); falling back to running runtime");
-            }
-        }
-
-        // Two distinct modes:
-        //   ref-pack mode: walk reference DLLs in resolved pack dirs; loader is seeded
-        //     ONLY with those dirs (runtime dir would duplicate mscorlib and crash
-        //     MetadataLoadContext). XML docs come from the same dirs.
-        //   legacy mode: walk the running runtime dir (where mscorlib actually lives);
-        //     loader auto-seeds the runtime; XML docs come from ResolveDefaultDocDir()
-        //     (typically the matching ref pack on a normal .NET install).
-        IReadOnlyList<string> docDirs;
-        IReadOnlyList<string> walkDirs;
-        bool fromRefPacks = refPackDirs.Count > 0;
-
-        if (fromRefPacks)
-        {
-            docDirs = refPackDirs;
-            walkDirs = refPackDirs;
-        }
-        else
-        {
-            var defaultDocDir = BclIndexBuilder.ResolveDefaultDocDir();
-            docDirs = new[] { defaultDocDir };
-            walkDirs = new[] { Path.GetDirectoryName(typeof(object).Assembly.Location)! };
+            progress?.Invoke($"  no reference pack found for {ctx.Tfm} ({ctx.Sdk}); falling back to running runtime");
         }
 
         var docIndex = BclIndexBuilder.BuildFromRuntime(docDirs);
         docs.Store(docIndex.Values);
         progress?.Invoke($"  {docIndex.Count:N0} doc entries loaded from {string.Join(", ", docDirs)}");
 
-        // Add dep doc entries to the shared repo so MethodIndexBuilder can resolve
-        // them while reflecting dep assemblies.
-        if (deps is not null && deps.Entries.Count > 0)
-        {
-            foreach (var entry in deps.Entries)
-            {
-                try
-                {
-                    var docMap = entry.XmlPath is not null
-                        ? XmlDocParser.Parse(entry.XmlPath)
-                        : XmlDocParser.ParseForAssembly(entry.AssemblyPath);
-                    docs.Store(docMap.Values);
-                }
-                catch (Exception ex) when (ex is FileNotFoundException
-                                            or InvalidDataException
-                                            or System.Xml.XmlException)
-                {
-                    // Reflection can still produce signatures without the docs.
-                }
-            }
-        }
-
-        // Loader covers BCL search dirs + every distinct directory that contains a
-        // dep dll. This lets references between packages (and from packages back
-        // into BCL) resolve while we reflect.
-        var depDirs = (deps?.Entries ?? Array.Empty<DependencyEntry>())
-            .Select(e => Path.GetDirectoryName(e.AssemblyPath))
-            .Where(d => !string.IsNullOrEmpty(d))
-            .Select(d => d!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var loaderDirs = walkDirs.Concat(depDirs).ToList();
-
         progress?.Invoke("Walking BCL assemblies...");
         using var loader = fromRefPacks
-            ? new MetadataLoader(loaderDirs, includeRuntimeDir: false)
-            : new MetadataLoader(loaderDirs);
+            ? new MetadataLoader(walkDirs, includeRuntimeDir: false)
+            : new MetadataLoader(walkDirs);
+
         var all = new List<CachedMethod>();
         var assemblyCount = 0;
 
@@ -144,83 +76,202 @@ public static class IndexBuilder
         }
 
         progress?.Invoke($"  {all.Count:N0} methods from {assemblyCount} assemblies");
-
-        if (deps is not null && deps.Entries.Count > 0)
-        {
-            progress?.Invoke($"Walking {deps.Entries.Count} dependency assemblies...");
-            var depMethodCount = 0;
-            var depAssemblyCount = 0;
-
-            foreach (var entry in deps.Entries)
-            {
-                if (!MetadataLoader.IsManagedAssembly(entry.AssemblyPath))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var asm = loader.LoadFromAssemblyPath(entry.AssemblyPath);
-                    var source = new MethodSource(entry.SourceKind, entry.SourceName);
-                    var methods = MethodIndexBuilder.BuildFromAssembly(asm, docs);
-                    foreach (var m in methods)
-                    {
-                        all.Add(Project(m, source));
-                        depMethodCount++;
-                    }
-                    depAssemblyCount++;
-                }
-                catch (Exception ex) when (ex is BadImageFormatException or FileLoadException)
-                {
-                    // Skip — same policy as BCL walk.
-                }
-            }
-
-            progress?.Invoke($"  {depMethodCount:N0} methods from {depAssemblyCount} dependency assemblies");
-        }
-
-        if (ctx is not null)
-        {
-            progress?.Invoke("Walking source files...");
-            var sourceMethods = new List<CachedMethod>();
-            foreach (var csproj in ProjectContextDetector.EnumerateCsprojs(ctx.OriginPath))
-            {
-                var asmName = ReadAssemblyName(csproj)
-                    ?? Path.GetFileNameWithoutExtension(csproj);
-                var fromCsproj = SourceIndexBuilder.BuildFromCsproj(csproj, asmName, progress);
-                sourceMethods.AddRange(fromCsproj);
-            }
-
-            // Source entries are authoritative for live edits — when their
-            // (FullName, normalized params) matches an already-indexed assembly
-            // entry, drop the assembly one. The normalizer folds C# keyword
-            // aliases (int ↔ Int32) so the source string and the metadata
-            // type name compare equal.
-            if (sourceMethods.Count > 0)
-            {
-                var sourceKeys = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var m in sourceMethods)
-                {
-                    sourceKeys.Add(MethodKey(m));
-                }
-                var deduped = new List<CachedMethod>(all.Count);
-                var dropped = 0;
-                foreach (var m in all)
-                {
-                    if (sourceKeys.Contains(MethodKey(m)))
-                    {
-                        dropped++;
-                        continue;
-                    }
-                    deduped.Add(m);
-                }
-                all = deduped;
-                all.AddRange(sourceMethods);
-                progress?.Invoke($"  {sourceMethods.Count:N0} source methods indexed; {dropped:N0} assembly entries shadowed");
-            }
-        }
-
         return all;
+    }
+
+    /// <summary>
+    /// Walks every dep assembly in <paramref name="deps"/> using a
+    /// <see cref="MetadataLoader"/> seeded with both BCL search dirs and dep
+    /// dirs (so cross-package references resolve). Returns the methods tagged
+    /// with the dep's <see cref="MethodSource"/>.
+    /// </summary>
+    public static IReadOnlyList<CachedMethod> BuildDepMethods(
+        ProjectContext? ctx,
+        ProjectDependencies deps,
+        Action<string>? progress = null)
+    {
+        if (deps.Entries.Count == 0)
+        {
+            return Array.Empty<CachedMethod>();
+        }
+
+        var docs = new InMemoryDocEntryRepository();
+        foreach (var entry in deps.Entries)
+        {
+            try
+            {
+                var docMap = entry.XmlPath is not null
+                    ? XmlDocParser.Parse(entry.XmlPath)
+                    : XmlDocParser.ParseForAssembly(entry.AssemblyPath);
+                docs.Store(docMap.Values);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException
+                                        or InvalidDataException
+                                        or System.Xml.XmlException)
+            {
+                // Reflection can still produce signatures without the docs.
+            }
+        }
+
+        var (_, walkDirs, fromRefPacks) = ResolveBclDirs(ctx);
+
+        var depDirs = deps.Entries
+            .Select(e => Path.GetDirectoryName(e.AssemblyPath))
+            .Where(d => !string.IsNullOrEmpty(d))
+            .Select(d => d!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var loaderDirs = walkDirs.Concat(depDirs).ToList();
+
+        progress?.Invoke($"Walking {deps.Entries.Count} dependency assemblies...");
+        using var loader = fromRefPacks
+            ? new MetadataLoader(loaderDirs, includeRuntimeDir: false)
+            : new MetadataLoader(loaderDirs);
+
+        var all = new List<CachedMethod>();
+        var depMethodCount = 0;
+        var depAssemblyCount = 0;
+
+        foreach (var entry in deps.Entries)
+        {
+            if (!MetadataLoader.IsManagedAssembly(entry.AssemblyPath))
+            {
+                continue;
+            }
+
+            try
+            {
+                var asm = loader.LoadFromAssemblyPath(entry.AssemblyPath);
+                var source = new MethodSource(entry.SourceKind, entry.SourceName);
+                var methods = MethodIndexBuilder.BuildFromAssembly(asm, docs);
+                foreach (var m in methods)
+                {
+                    all.Add(Project(m, source));
+                    depMethodCount++;
+                }
+                depAssemblyCount++;
+            }
+            catch (Exception ex) when (ex is BadImageFormatException or FileLoadException)
+            {
+                // Skip — same policy as BCL walk.
+            }
+        }
+
+        progress?.Invoke($"  {depMethodCount:N0} methods from {depAssemblyCount} dependency assemblies");
+        return all;
+    }
+
+    /// <summary>
+    /// Walks .cs files for the projects belonging to <paramref name="ctx"/> and
+    /// returns the methods discovered. Each entry is tagged with
+    /// <see cref="MethodSource"/> kind <c>"source"</c> so
+    /// <see cref="Dedupe"/> can shadow assembly entries with the same signature.
+    /// </summary>
+    public static IReadOnlyList<CachedMethod> BuildSourceMethods(
+        ProjectContext ctx,
+        Action<string>? progress = null)
+    {
+        progress?.Invoke("Walking source files...");
+        var all = new List<CachedMethod>();
+        foreach (var csproj in ProjectContextDetector.EnumerateCsprojs(ctx.OriginPath))
+        {
+            var asmName = ReadAssemblyName(csproj)
+                ?? Path.GetFileNameWithoutExtension(csproj);
+            var fromCsproj = SourceIndexBuilder.BuildFromCsproj(csproj, asmName, progress);
+            all.AddRange(fromCsproj);
+        }
+        return all;
+    }
+
+    /// <summary>
+    /// Merges assembly-side and source-side methods, dropping any assembly
+    /// entry whose <c>(FullName, normalized params)</c> matches a source entry.
+    /// The normalizer folds C# keyword aliases (<c>int</c> ↔ <c>Int32</c>) so
+    /// the source string and metadata type name compare equal.
+    /// </summary>
+    public static IReadOnlyList<CachedMethod> Dedupe(
+        IReadOnlyList<CachedMethod> assemblyMethods,
+        IReadOnlyList<CachedMethod> sourceMethods,
+        Action<string>? progress = null)
+    {
+        if (sourceMethods.Count == 0)
+        {
+            return assemblyMethods;
+        }
+
+        var sourceKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var m in sourceMethods)
+        {
+            sourceKeys.Add(MethodKey(m));
+        }
+
+        var deduped = new List<CachedMethod>(assemblyMethods.Count + sourceMethods.Count);
+        var dropped = 0;
+        foreach (var m in assemblyMethods)
+        {
+            if (sourceKeys.Contains(MethodKey(m)))
+            {
+                dropped++;
+                continue;
+            }
+            deduped.Add(m);
+        }
+        deduped.AddRange(sourceMethods);
+
+        progress?.Invoke($"  {sourceMethods.Count:N0} source methods indexed; {dropped:N0} assembly entries shadowed");
+        return deduped;
+    }
+
+    /// <summary>
+    /// Convenience wrapper that runs all three passes back-to-back. Used by
+    /// tests and as the non-cached entry point; the cached-CLI flow calls the
+    /// per-bucket methods directly.
+    /// </summary>
+    public static IReadOnlyList<CachedMethod> BuildIndex(
+        ProjectContext? ctx,
+        ProjectDependencies? deps,
+        Action<string>? progress = null)
+    {
+        var bcl = BuildBclMethods(ctx, progress);
+        var depMethods = deps is null
+            ? Array.Empty<CachedMethod>()
+            : BuildDepMethods(ctx, deps, progress);
+        var sourceMethods = ctx is null
+            ? Array.Empty<CachedMethod>()
+            : BuildSourceMethods(ctx, progress);
+
+        var assemblyMethods = new List<CachedMethod>(bcl.Count + depMethods.Count);
+        assemblyMethods.AddRange(bcl);
+        assemblyMethods.AddRange(depMethods);
+
+        return Dedupe(assemblyMethods, sourceMethods, progress);
+    }
+
+    /// <summary>
+    /// Returns the doc-search directories, the walk directories (where BCL
+    /// DLLs live), and whether we resolved against an installed reference
+    /// pack. Both <see cref="BuildBclMethods"/> and <see cref="BuildDepMethods"/>
+    /// rely on this to seed their <see cref="MetadataLoader"/>.
+    /// </summary>
+    private static (IReadOnlyList<string> DocDirs, IReadOnlyList<string> WalkDirs, bool FromRefPacks)
+        ResolveBclDirs(ProjectContext? ctx)
+    {
+        IReadOnlyList<string> refPackDirs = Array.Empty<string>();
+        if (ctx is not null
+            && ProjectContextDetector.TryParseNetTfm(ctx.Tfm, out var maj, out var min))
+        {
+            refPackDirs = BclIndexBuilder.ResolveDocDirs(maj, min, PacksFor(ctx.Sdk));
+        }
+
+        if (refPackDirs.Count > 0)
+        {
+            return (refPackDirs, refPackDirs, true);
+        }
+
+        var defaultDocDir = BclIndexBuilder.ResolveDefaultDocDir();
+        var runtimeWalkDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        return (new[] { defaultDocDir }, new[] { runtimeWalkDir }, false);
     }
 
     private static string MethodKey(CachedMethod m)
@@ -310,10 +361,10 @@ public static class IndexBuilder
     };
 
     /// <summary>
-    /// Returns every .cs file that the source pass would index for the given
-    /// context. Program.cs feeds these into <see cref="CacheStore.TryLoad"/>'s
-    /// manifest list so an edited file invalidates the cache automatically —
-    /// the CLI doesn't have to be re-invoked with <c>--rebuild</c>.
+    /// Returns every .cs file the source pass would index for the given
+    /// context. Program.cs feeds these into <see cref="CacheStore.TryLoadSource"/>'s
+    /// invalidation list so an edited file invalidates only the source bucket
+    /// — the CLI doesn't have to be re-invoked with <c>--rebuild</c>.
     /// </summary>
     public static IReadOnlyList<string> EnumerateSourceFiles(ProjectContext ctx)
     {
