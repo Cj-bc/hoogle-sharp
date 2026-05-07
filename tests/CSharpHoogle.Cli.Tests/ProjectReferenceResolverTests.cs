@@ -134,4 +134,160 @@ public class ProjectReferenceResolverTests : IDisposable
         Assert.Empty(entries);
         Assert.Contains(messages, m => m.Contains("Skipping ProjectReference Lib"));
     }
+
+    [Fact]
+    public void Resolve_PicksUpReferenceWithHintPath()
+    {
+        var hostDir = Path.Combine(_tempDir, "Host");
+        var vendorDir = Path.Combine(_tempDir, "Vendor");
+        Directory.CreateDirectory(hostDir);
+        Directory.CreateDirectory(vendorDir);
+
+        var dll = Path.Combine(vendorDir, "MyVendor.dll");
+        File.WriteAllBytes(dll, Array.Empty<byte>());
+        File.WriteAllText(Path.ChangeExtension(dll, ".xml"), "<doc/>");
+
+        File.WriteAllText(Path.Combine(hostDir, "Host.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <Reference Include="MyVendor">
+                  <HintPath>..\Vendor\MyVendor.dll</HintPath>
+                </Reference>
+              </ItemGroup>
+            </Project>
+            """);
+
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(hostDir, "Host.csproj"));
+
+        var entries = ProjectReferenceResolver.Resolve(ctx, _ => { });
+
+        var entry = Assert.Single(entries);
+        Assert.Equal(Path.GetFullPath(dll), entry.AssemblyPath);
+        Assert.Equal("reference", entry.SourceKind);
+        Assert.Equal("MyVendor", entry.SourceName);
+        Assert.NotNull(entry.XmlPath);
+    }
+
+    [Fact]
+    public void Resolve_StripsStrongNameTokens_FromReferenceInclude()
+    {
+        var hostDir = Path.Combine(_tempDir, "Host");
+        var vendorDir = Path.Combine(_tempDir, "Vendor");
+        Directory.CreateDirectory(hostDir);
+        Directory.CreateDirectory(vendorDir);
+
+        var dll = Path.Combine(vendorDir, "MyVendor.dll");
+        File.WriteAllBytes(dll, Array.Empty<byte>());
+
+        File.WriteAllText(Path.Combine(hostDir, "Host.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <Reference Include="MyVendor, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null">
+                  <HintPath>..\Vendor\MyVendor.dll</HintPath>
+                </Reference>
+              </ItemGroup>
+            </Project>
+            """);
+
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(hostDir, "Host.csproj"));
+
+        var entries = ProjectReferenceResolver.Resolve(ctx, _ => { });
+
+        var entry = Assert.Single(entries);
+        Assert.Equal("MyVendor", entry.SourceName);
+    }
+
+    [Fact]
+    public void Resolve_SkipsReference_WithoutHintPath()
+    {
+        var hostDir = Path.Combine(_tempDir, "Host");
+        Directory.CreateDirectory(hostDir);
+
+        File.WriteAllText(Path.Combine(hostDir, "Host.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <Reference Include="System.Xml" />
+              </ItemGroup>
+            </Project>
+            """);
+
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(hostDir, "Host.csproj"));
+
+        var entries = ProjectReferenceResolver.Resolve(ctx, _ => { });
+
+        Assert.Empty(entries);
+    }
+
+    [Fact]
+    public void Resolve_DedupesProjectReferenceAndReference_PointingToSameDll()
+    {
+        var hostDir = Path.Combine(_tempDir, "Host");
+        var libDir = Path.Combine(_tempDir, "Lib");
+        Directory.CreateDirectory(hostDir);
+        Directory.CreateDirectory(libDir);
+
+        var libCsproj = Path.Combine(libDir, "Lib.csproj");
+        File.WriteAllText(libCsproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net8.0</TargetFramework>
+                <AssemblyName>Lib</AssemblyName>
+              </PropertyGroup>
+            </Project>
+            """);
+
+        var debugDll = Path.Combine(libDir, "bin", "Debug", "net8.0", "Lib.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(debugDll)!);
+        File.WriteAllBytes(debugDll, Array.Empty<byte>());
+
+        var hostCsproj = Path.Combine(hostDir, "Host.csproj");
+        File.WriteAllText(hostCsproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="..\Lib\Lib.csproj" />
+                <Reference Include="Lib">
+                  <HintPath>..\Lib\bin\Debug\net8.0\Lib.dll</HintPath>
+                </Reference>
+              </ItemGroup>
+            </Project>
+            """);
+
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, hostCsproj);
+
+        var entries = ProjectReferenceResolver.Resolve(ctx, _ => { });
+
+        var entry = Assert.Single(entries);
+        Assert.Equal(Path.GetFullPath(debugDll), entry.AssemblyPath);
+        Assert.Equal("project", entry.SourceKind);
+    }
+
+    [Fact]
+    public void Resolve_WarnsAndSkips_WhenHintPathFileMissing()
+    {
+        var hostDir = Path.Combine(_tempDir, "Host");
+        Directory.CreateDirectory(hostDir);
+
+        File.WriteAllText(Path.Combine(hostDir, "Host.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <Reference Include="Ghost">
+                  <HintPath>..\Vendor\Ghost.dll</HintPath>
+                </Reference>
+              </ItemGroup>
+            </Project>
+            """);
+
+        var ctx = new ProjectContext("net8.0", SdkKind.Default, Path.Combine(hostDir, "Host.csproj"));
+        var messages = new List<string>();
+
+        var entries = ProjectReferenceResolver.Resolve(ctx, messages.Add);
+
+        Assert.Empty(entries);
+        Assert.Contains(messages, m => m.Contains("Skipping Reference Ghost"));
+    }
 }
