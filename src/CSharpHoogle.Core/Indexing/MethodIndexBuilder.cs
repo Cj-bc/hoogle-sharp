@@ -83,7 +83,20 @@ public static class MethodIndexBuilder
                     continue;
                 }
 
-                entries.Add(BuildEntry(method, docs));
+                try
+                {
+                    entries.Add(BuildEntry(method, docs));
+                }
+                catch (Exception ex) when (
+                    ex is FileNotFoundException
+                        or FileLoadException
+                        or TypeLoadException
+                        or BadImageFormatException)
+                {
+                    // A referenced type's assembly is missing from the resolver's
+                    // search paths, or the reference itself is malformed. Skip just
+                    // this method — same tolerance policy as SafeGetTypes.
+                }
             }
         }
 
