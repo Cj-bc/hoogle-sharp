@@ -108,15 +108,35 @@ public static class MethodIndexBuilder
             ? Array.ConvertAll(method.GetGenericArguments(), g => g.Name)
             : Array.Empty<string>();
 
+        // Receiver only makes sense for instance methods. Static methods —
+        // including extension methods, whose first parameter already plays
+        // the role of receiver — get null so the matcher's synthetic-receiver
+        // slot is suppressed for them.
+        var isExtension = IsExtensionMethod(method);
+        Type? declaringType = null;
+        string[] typeGenericParams = Array.Empty<string>();
+        if (!method.IsStatic && !isExtension && method.DeclaringType is { } declaring)
+        {
+            declaringType = declaring;
+            if (declaring.IsGenericType)
+            {
+                typeGenericParams = Array.ConvertAll(
+                    declaring.GetGenericArguments(),
+                    g => g.Name);
+            }
+        }
+
         return new MethodEntry(
             FullName: fullName,
             ParameterTypes: paramTypes,
             ReturnType: method.ReturnType,
             GenericParams: genericParams,
-            IsExtensionMethod: IsExtensionMethod(method),
+            IsExtensionMethod: isExtension,
             DocUrl: DocUrlResolver.Resolve(memberKey),
             Doc: docs.Get(memberKey),
-            RequiredParameterCount: requiredCount);
+            RequiredParameterCount: requiredCount,
+            DeclaringType: declaringType,
+            TypeGenericParams: typeGenericParams);
     }
 
     private static string BuildFullName(MethodInfo method)

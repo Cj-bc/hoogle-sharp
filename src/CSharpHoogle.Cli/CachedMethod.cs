@@ -22,4 +22,6 @@ public sealed record CachedMethod(
     string DocUrl,
     string? Summary,
     MethodSource Source,
-    int RequiredParameterCount);
+    int RequiredParameterCount,
+    string? DeclaringType = null,
+    string[]? TypeGenericParams = null);

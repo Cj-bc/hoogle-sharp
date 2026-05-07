@@ -361,5 +361,7 @@ public static class IndexBuilder
         DocUrl: m.DocUrl,
         Summary: m.Doc?.Summary,
         Source: source,
-        RequiredParameterCount: m.RequiredParameterCount);
+        RequiredParameterCount: m.RequiredParameterCount,
+        DeclaringType: m.DeclaringType is null ? null : TypeNameFormatter.Format(m.DeclaringType),
+        TypeGenericParams: m.TypeGenericParams ?? Array.Empty<string>());
 }

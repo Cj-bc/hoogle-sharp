@@ -5,11 +5,11 @@ namespace CSharpHoogle.Cli.Tests;
 public class CacheStoreTests
 {
     [Fact]
-    public void GetCachePath_BumpedToSchemaV5()
+    public void GetCachePath_BumpedToSchemaV6()
     {
         var ctx = new ProjectContext("net8.0", SdkKind.Default, "/some/path/Foo.csproj");
         var path = CacheStore.GetCachePath(ctx);
-        Assert.EndsWith(".v5.json", path);
+        Assert.EndsWith(".v6.json", path);
     }
 
     [Fact]
