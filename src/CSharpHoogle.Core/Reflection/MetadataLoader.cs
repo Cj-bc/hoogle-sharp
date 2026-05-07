@@ -37,6 +37,22 @@ public sealed class MetadataLoader : IDisposable
     {
         _searchPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // Dedup by filename (first wins) so that two copies of mscorlib.dll
+        // — runtime/ref-pack vs. a Unity facade in a NuGet/HintPath dir —
+        // don't both end up in the resolver. PathAssemblyResolver would try
+        // to load both during MetadataLoadContext's core-assembly probe and
+        // throw "already been loaded" on the second one. Runtime/ref-pack is
+        // walked first so its copy wins.
+        var seenFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddDll(string dll)
+        {
+            if (seenFileNames.Add(Path.GetFileName(dll)))
+            {
+                _searchPaths.Add(dll);
+            }
+        }
+
         if (includeRuntimeDir)
         {
             var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)
@@ -45,7 +61,7 @@ public sealed class MetadataLoader : IDisposable
 
             foreach (var dll in Directory.EnumerateFiles(runtimeDir, "*.dll"))
             {
-                _searchPaths.Add(dll);
+                AddDll(dll);
             }
         }
 
@@ -60,7 +76,7 @@ public sealed class MetadataLoader : IDisposable
 
                 foreach (var dll in Directory.EnumerateFiles(dir, "*.dll"))
                 {
-                    _searchPaths.Add(dll);
+                    AddDll(dll);
                 }
             }
         }
