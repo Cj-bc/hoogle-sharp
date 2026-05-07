@@ -117,4 +117,43 @@ public class MethodIndexBuilderTests
         Assert.NotEmpty(entries);
         Assert.Contains(entries, e => e.FullName == "System.Linq.Enumerable.Select");
     }
+
+    [Fact]
+    public void BuildFromAssembly_InstanceMethod_HasDeclaringTypeAndTypeGenerics()
+    {
+        // Pick a stable, well-known instance method on a generic BCL type.
+        // List<T>.Contains lives in System.Private.CoreLib alongside
+        // typeof(object), so we don't have to guess at ref-assembly forwarding.
+        var coreLib = typeof(object).Assembly.Location;
+        using var loader = new MetadataLoader();
+        var asm = loader.LoadFromAssemblyPath(coreLib);
+        var docs = new InMemoryDocEntryRepository();
+
+        var entries = MethodIndexBuilder.BuildFromAssembly(asm, docs);
+
+        var contains = entries.FirstOrDefault(e =>
+            e.FullName == "System.Collections.Generic.List.Contains");
+        Assert.NotNull(contains);
+        Assert.NotNull(contains!.DeclaringType);
+        Assert.Equal("List`1", contains.DeclaringType!.Name);
+        Assert.Contains("T", contains.TypeGenericParams!);
+    }
+
+    [Fact]
+    public void BuildFromAssembly_ExtensionMethod_DeclaringTypeNull()
+    {
+        // Enumerable.Select is a static extension method; the receiver is
+        // already parameter[0], so DeclaringType must stay null to keep the
+        // matcher from doubling up.
+        using var loader = new MetadataLoader();
+        var asm = loader.LoadFromAssemblyPath(SystemLinqDll);
+        var docs = new InMemoryDocEntryRepository();
+
+        var entries = MethodIndexBuilder.BuildFromAssembly(asm, docs);
+
+        var select = entries.First(e =>
+            e.FullName == "System.Linq.Enumerable.Select" && e.IsExtensionMethod);
+        Assert.Null(select.DeclaringType);
+        Assert.Empty(select.TypeGenericParams!);
+    }
 }

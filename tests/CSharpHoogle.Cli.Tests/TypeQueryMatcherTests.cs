@@ -10,7 +10,9 @@ public class TypeQueryMatcherTests
         string returnType,
         string[] parameterTypes,
         int requiredCount,
-        string[]? generics = null)
+        string[]? generics = null,
+        string? declaringType = null,
+        string[]? typeGenericParams = null)
         => new(
             FullName: "Test.M",
             ReturnType: returnType,
@@ -20,7 +22,17 @@ public class TypeQueryMatcherTests
             DocUrl: "",
             Summary: null,
             Source: Source,
-            RequiredParameterCount: requiredCount);
+            RequiredParameterCount: requiredCount,
+            DeclaringType: declaringType,
+            TypeGenericParams: typeGenericParams ?? Array.Empty<string>());
+
+    // bool Dictionary<TKey,TValue>.ContainsKey(TKey key)
+    private static CachedMethod ContainsKey() => Method(
+        returnType: "bool",
+        parameterTypes: new[] { "TKey" },
+        requiredCount: 1,
+        declaringType: "Dictionary<TKey, TValue>",
+        typeGenericParams: new[] { "TKey", "TValue" });
 
     // FirstAsync<T>(this IObservable<T>, CancellationToken = default) -> Task<T>
     private static CachedMethod FirstAsync() => Method(
@@ -109,5 +121,79 @@ public class TypeQueryMatcherTests
         var m = Method("Result", new[] { "Alpha" }, requiredCount: 1);
         var query = TypeQuery.ParseSignature("Alpha -> Beta -> Result");
         Assert.False(TypeQueryMatcher.Matches(query, m));
+    }
+
+    [Fact]
+    public void Receiver_InQuery_MatchesInstanceMethod()
+    {
+        // Dictionary<TKey,TValue> -> TKey -> bool finds bool ContainsKey(TKey)
+        // declared on Dictionary<TKey,TValue>.
+        var query = TypeQuery.ParseSignature("Dictionary<TKey, TValue> -> TKey -> bool");
+        Assert.True(TypeQueryMatcher.Matches(query, ContainsKey()));
+    }
+
+    [Fact]
+    public void Receiver_OmittedFromQuery_StillMatchesInstanceMethod()
+    {
+        // The synthetic receiver slot is optional — TKey -> bool still matches.
+        var query = TypeQuery.ParseSignature("TKey -> bool");
+        Assert.True(TypeQueryMatcher.Matches(query, ContainsKey()));
+    }
+
+    [Fact]
+    public void Receiver_QueryHasNoMatchingMethod_Rejected()
+    {
+        // A static method (DeclaringType: null) must not gain a receiver slot,
+        // so a query that mentions Dictionary cannot be absorbed by a static
+        // helper with mismatched parameter types.
+        var staticMethod = Method("bool", new[] { "int" }, requiredCount: 1);
+        var query = TypeQuery.ParseSignature("Dictionary<TKey, TValue> -> TKey -> bool");
+        Assert.False(TypeQueryMatcher.Matches(query, staticMethod));
+    }
+
+    [Fact]
+    public void Receiver_StaticMethod_DoesNotInflateArity()
+    {
+        // int -> int continues to match a static (DeclaringType: null) method
+        // with one int parameter and an int return — the receiver pool change
+        // must not regress static methods.
+        var staticAbs = Method("int", new[] { "int" }, requiredCount: 1);
+        var query = TypeQuery.ParseSignature("int -> int");
+        Assert.True(TypeQueryMatcher.Matches(query, staticAbs));
+    }
+
+    [Fact]
+    public void Receiver_TypeGenericsUnifyAcrossReceiverAndParameters()
+    {
+        // The method has receiver Dictionary<TKey, TValue> and parameter TKey.
+        // With a query that supplies a CONCRETE Dictionary, the type generic
+        // TKey must bind to the same concrete type that fills the param slot.
+        var query = TypeQuery.ParseSignature("Dictionary<int, string> -> int -> bool");
+        Assert.True(TypeQueryMatcher.Matches(query, ContainsKey()));
+
+        // A query whose parameter type can't unify with TKey (because TKey
+        // is bound to int by the receiver) must fail.
+        var mismatch = TypeQuery.ParseSignature("Dictionary<int, string> -> string -> bool");
+        Assert.False(TypeQueryMatcher.Matches(mismatch, ContainsKey()));
+    }
+
+    [Fact]
+    public void Receiver_ConcreteTypeMatchesAgainstReceiver()
+    {
+        // Receiver as a non-generic concrete type, no type-level generics.
+        var instanceMethod = Method(
+            returnType: "string",
+            parameterTypes: Array.Empty<string>(),
+            requiredCount: 0,
+            declaringType: "MyClass");
+
+        Assert.True(TypeQueryMatcher.Matches(
+            TypeQuery.ParseSignature("MyClass -> string"),
+            instanceMethod));
+
+        // Without the receiver, the zero-param method still matches by return.
+        Assert.True(TypeQueryMatcher.Matches(
+            TypeQuery.ParseSignature("string"),
+            instanceMethod));
     }
 }

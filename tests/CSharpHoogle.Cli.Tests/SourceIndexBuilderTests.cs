@@ -214,4 +214,60 @@ public class SourceIndexBuilderTests : IDisposable
         var send = Assert.Single(methods, m => m.FullName == "Doc.Service.Send");
         Assert.Equal("Sends a thing.", send.Summary);
     }
+
+    [Fact]
+    public void BuildFromCsproj_InstanceMethod_RecordsDeclaringType()
+    {
+        var csproj = Path.Combine(_tempDir, "App.csproj");
+        File.WriteAllText(csproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(_tempDir, "Bag.cs"), """
+            namespace App;
+            public class Bag<TKey, TValue>
+            {
+                public bool ContainsKey(TKey key) => false;
+                public static Bag<TKey, TValue> Empty() => new();
+            }
+            """);
+
+        var methods = SourceIndexBuilder.BuildFromCsproj(csproj, "App");
+
+        var contains = Assert.Single(methods, m => m.FullName == "App.Bag.ContainsKey");
+        Assert.Equal("Bag<TKey, TValue>", contains.DeclaringType);
+        Assert.Equal(new[] { "TKey", "TValue" }, contains.TypeGenericParams);
+
+        // Static factory: receiver suppressed.
+        var empty = Assert.Single(methods, m => m.FullName == "App.Bag.Empty");
+        Assert.Null(empty.DeclaringType);
+        Assert.Empty(empty.TypeGenericParams!);
+    }
+
+    [Fact]
+    public void BuildFromCsproj_ExtensionMethod_LeavesDeclaringTypeNull()
+    {
+        // Extension methods already place the receiver in parameter[0]; the
+        // matcher's synthetic-receiver slot must NOT also fire for them, so
+        // DeclaringType stays null.
+        var csproj = Path.Combine(_tempDir, "App.csproj");
+        File.WriteAllText(csproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(_tempDir, "Ext.cs"), """
+            namespace App;
+            public static class StringExtensions
+            {
+                public static string Shout(this string s) => s.ToUpper();
+            }
+            """);
+
+        var methods = SourceIndexBuilder.BuildFromCsproj(csproj, "App");
+        var shout = Assert.Single(methods, m => m.FullName == "App.StringExtensions.Shout");
+        Assert.True(shout.IsExtensionMethod);
+        Assert.Null(shout.DeclaringType);
+    }
 }
