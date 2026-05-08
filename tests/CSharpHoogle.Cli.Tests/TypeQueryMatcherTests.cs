@@ -196,4 +196,69 @@ public class TypeQueryMatcherTests
             TypeQuery.ParseSignature("string"),
             instanceMethod));
     }
+
+    // System.Func<T1,T2,TResult>.Invoke(T1, T2) : TResult — every parameter
+    // and the return are type-level generics. The receiver is generic too.
+    private static CachedMethod FuncInvoke() => Method(
+        returnType: "TResult",
+        parameterTypes: new[] { "T1", "T2" },
+        requiredCount: 2,
+        declaringType: "Func<T1, T2, TResult>",
+        typeGenericParams: new[] { "T1", "T2", "TResult" });
+
+    [Fact]
+    public void ConcreteQuery_DoesNotMatchPureGenericMethod_ByDefault()
+    {
+        // Int32 -> Int32 -> Int32 must NOT absorb Func.Invoke under the
+        // default policy: the only way to match is to bind T1, T2, TResult
+        // freshly to Int32 from concrete query positions, which is the noise
+        // we filter out.
+        var query = TypeQuery.ParseSignature("Int32 -> Int32 -> Int32");
+        Assert.False(TypeQueryMatcher.Matches(query, FuncInvoke()));
+    }
+
+    [Fact]
+    public void ConcreteQuery_MatchesPureGenericMethod_WithPolymorphicPolicy()
+    {
+        // Same query, but with the opt-in policy, the polymorphic match comes back.
+        var query = TypeQuery.ParseSignature("Int32 -> Int32 -> Int32");
+        Assert.True(TypeQueryMatcher.Matches(query, FuncInvoke(), MatchPolicy.IncludePolymorphic));
+    }
+
+    [Fact]
+    public void WildcardQuery_StillMatchesPureGenericMethod()
+    {
+        // T -> U -> R is the user explicitly asking for a polymorphic shape.
+        // Query wildcards binding method generics must not be penalized.
+        var query = TypeQuery.ParseSignature("T -> U -> R");
+        Assert.True(TypeQueryMatcher.Matches(query, FuncInvoke()));
+        Assert.True(TypeQueryMatcher.Matches(query, FuncInvoke(), MatchPolicy.IncludePolymorphic));
+    }
+
+    [Fact]
+    public void ConcreteReceiverPinningTypeGeneric_StillMatchesParameter()
+    {
+        // Regression guard for the receiver-driven case: Dictionary<int,string>
+        // pins TKey=int via the receiver, then the parameter slot's TKey is
+        // already bound — no fresh concrete→generic binding happens, so the
+        // default policy must still accept this.
+        var query = TypeQuery.ParseSignature("Dictionary<int, string> -> int -> bool");
+        Assert.True(TypeQueryMatcher.Matches(query, ContainsKey()));
+    }
+
+    [Fact]
+    public void ConcreteQuery_DoesNotMatchSingleParamGenericMethod_ByDefault()
+    {
+        // T Identity<T>(T) — even a "useful" generic method is filtered when
+        // queried with concrete types, since the user can opt back in via
+        // --polymorphic. This is a deliberate trade documented in the matcher.
+        var identity = Method(
+            returnType: "T",
+            parameterTypes: new[] { "T" },
+            requiredCount: 1,
+            generics: new[] { "T" });
+        var query = TypeQuery.ParseSignature("Int32 -> Int32");
+        Assert.False(TypeQueryMatcher.Matches(query, identity));
+        Assert.True(TypeQueryMatcher.Matches(query, identity, MatchPolicy.IncludePolymorphic));
+    }
 }

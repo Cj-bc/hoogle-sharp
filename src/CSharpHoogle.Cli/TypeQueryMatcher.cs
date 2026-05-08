@@ -27,9 +27,27 @@ namespace CSharpHoogle.Cli;
 ///     while <c>T -&gt; U</c> matches both. Type-level generics from the declaring
 ///     type (e.g. <c>TKey</c> from <c>Dictionary&lt;TKey,TValue&gt;</c>) act as
 ///     method-side wildcards alongside method-level generics.</item>
+///   <item>By default (<see cref="MatchPolicy.ExcludePolymorphic"/>), a
+///     concrete query type does not match a method's declared generic
+///     parameter unless that parameter is already pinned by the receiver,
+///     return type, or another already-matched slot. This stops queries like
+///     <c>Int32 -&gt; Int32 -&gt; Int32</c> from absorbing every fully-generic
+///     method (e.g. <c>Func&lt;T1,T2,TResult&gt;.Invoke</c>). The receiver
+///     case (<c>Dictionary&lt;int,string&gt; -&gt; int -&gt; bool</c> matching
+///     <c>ContainsKey(TKey)</c>) still works because TKey is bound by the
+///     receiver before parameter matching starts. Pass
+///     <see cref="MatchPolicy.IncludePolymorphic"/> to opt back in.</item>
 ///   <item>Otherwise, simple names must match case-insensitively and generic args / array dims must match structurally.</item>
 /// </list>
 /// </summary>
+public enum MatchPolicy
+{
+    /// <summary>Default: reject matches that can only succeed by binding a concrete query type to a method's declared generic parameter.</summary>
+    ExcludePolymorphic,
+    /// <summary>Allow concrete query types to bind method generic parameters freely.</summary>
+    IncludePolymorphic,
+}
+
 public static class TypeQueryMatcher
 {
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
@@ -54,7 +72,7 @@ public static class TypeQueryMatcher
         ["nuint"] = "UIntPtr",
     };
 
-    public static bool Matches(SignatureQuery query, CachedMethod method)
+    public static bool Matches(SignatureQuery query, CachedMethod method, MatchPolicy policy = MatchPolicy.ExcludePolymorphic)
     {
         // Instance methods get a synthetic, OPTIONAL receiver slot prepended
         // to the candidate pool so a query like `Dictionary<TKey,TValue> -> TKey -> bool`
@@ -112,7 +130,21 @@ public static class TypeQueryMatcher
         // return type.
         var bindings = new UnificationState();
         var used = new bool[slots.Length];
-        return TryAssignParameters(query, slots, ret, methodGenerics, receiverOffset, method.RequiredParameterCount, bindings, used, 0);
+        if (!TryAssignParameters(query, slots, ret, methodGenerics, receiverOffset, method.RequiredParameterCount, bindings, used, 0))
+        {
+            return false;
+        }
+
+        // Reject matches that only succeeded because a concrete query type
+        // was bound to a method-declared generic with no other constraint —
+        // the `Int32 -> Int32 -> Int32` matches `Func.Invoke(T1,T2):TResult`
+        // case. Receiver-driven bindings hit the already-bound branch in
+        // MatchType and don't contribute to this counter.
+        if (policy == MatchPolicy.ExcludePolymorphic && bindings.ConcreteBoundToMethodGeneric > 0)
+        {
+            return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -144,7 +176,7 @@ public static class TypeQueryMatcher
             {
                 if (!used[j]) return false;
             }
-            return MatchType(query.Return, methodReturn, methodGenerics, bindings);
+            return MatchType(query.Return, methodReturn, methodGenerics, bindings, topLevel: true);
         }
 
         var queryParam = query.Parameters[qIndex];
@@ -153,7 +185,7 @@ public static class TypeQueryMatcher
             if (used[j]) continue;
 
             var snapshot = bindings.Snapshot();
-            if (MatchType(queryParam, methodParams[j], methodGenerics, bindings))
+            if (MatchType(queryParam, methodParams[j], methodGenerics, bindings, topLevel: true))
             {
                 used[j] = true;
                 if (TryAssignParameters(query, methodParams, methodReturn, methodGenerics, receiverOffset, requiredCount, bindings, used, qIndex + 1))
@@ -167,7 +199,7 @@ public static class TypeQueryMatcher
         return false;
     }
 
-    private static bool MatchType(TypeRef query, TypeRef method, IReadOnlyList<string> methodGenerics, UnificationState bindings)
+    private static bool MatchType(TypeRef query, TypeRef method, IReadOnlyList<string> methodGenerics, UnificationState bindings, bool topLevel)
     {
         // Query-side wildcard (a user-written `T`, `TSource`, etc.) unifies
         // with the method position. The array suffix still has to line up
@@ -205,6 +237,18 @@ public static class TypeQueryMatcher
             {
                 return TypeRefEquals(bound, queryElement);
             }
+            // Track fresh "concrete query → method generic" bindings so the
+            // caller can reject matches that only land via this rule. Only
+            // count at the top level: when a query position is wholly a
+            // concrete type matched against a wholly-generic method slot.
+            // A binding produced by recursing into a user-written generic
+            // (e.g. `int` inside `Dictionary<int,string>` matching `TKey`)
+            // doesn't fit the noise pattern — the user explicitly named the
+            // outer concrete container.
+            if (topLevel && !IsQueryWildcard(query.Name))
+            {
+                bindings.ConcreteBoundToMethodGeneric++;
+            }
             bindings.Method[method.Name] = queryElement;
             return true;
         }
@@ -221,7 +265,7 @@ public static class TypeQueryMatcher
 
         for (var i = 0; i < query.Args.Count; i++)
         {
-            if (!MatchType(query.Args[i], method.Args[i], methodGenerics, bindings))
+            if (!MatchType(query.Args[i], method.Args[i], methodGenerics, bindings, topLevel: false))
             {
                 return false;
             }
@@ -307,8 +351,9 @@ public static class TypeQueryMatcher
     {
         public Dictionary<string, TypeRef> Query { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, TypeRef> Method { get; } = new(StringComparer.Ordinal);
+        public int ConcreteBoundToMethodGeneric { get; set; }
 
-        public BindingsSnapshot Snapshot() => new(Query.Count, Method.Count, Query.Keys.ToArray(), Method.Keys.ToArray());
+        public BindingsSnapshot Snapshot() => new(Query.Count, Method.Count, Query.Keys.ToArray(), Method.Keys.ToArray(), ConcreteBoundToMethodGeneric);
 
         public void Restore(BindingsSnapshot snap)
         {
@@ -326,8 +371,9 @@ public static class TypeQueryMatcher
                     if (Array.IndexOf(snap.MethodKeys, key) < 0) Method.Remove(key);
                 }
             }
+            ConcreteBoundToMethodGeneric = snap.ConcreteBoundToMethodGeneric;
         }
     }
 
-    private readonly record struct BindingsSnapshot(int QueryCount, int MethodCount, string[] QueryKeys, string[] MethodKeys);
+    private readonly record struct BindingsSnapshot(int QueryCount, int MethodCount, string[] QueryKeys, string[] MethodKeys, int ConcreteBoundToMethodGeneric);
 }

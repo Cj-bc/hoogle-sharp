@@ -48,6 +48,7 @@ public static class Program
         var showHelp = false;
         var listAssemblies = false;
         var json = false;
+        var includePolymorphic = false;
         var maxResults = -1; // -1: indicated no limitation
         string? projectOverride = null;
         string? tfmOverride = null;
@@ -70,6 +71,9 @@ public static class Program
                     break;
                 case "--json":
                     json = true;
+                    break;
+                case "--polymorphic":
+                    includePolymorphic = true;
                     break;
                 case "--project":
                     if (++i >= args.Length)
@@ -239,7 +243,7 @@ public static class Program
         // Join multi-token queries so unquoted input like `A -> B` works.
         var query = string.Join(' ', queryParts);
         var matches = TypeQuery.LooksLikeSignatureQuery(query)
-            ? RunSignatureSearch(query, methods)
+            ? RunSignatureSearch(query, methods, includePolymorphic)
             : RunSubstringSearch(query, methods);
 
         if (matches is null)
@@ -280,7 +284,7 @@ public static class Program
             .Where(m => m.FullName.Contains(query, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods)
+    private static IReadOnlyList<CachedMethod>? RunSignatureSearch(string query, IReadOnlyList<CachedMethod> methods, bool includePolymorphic)
     {
         SignatureQuery sig;
         try
@@ -293,8 +297,9 @@ public static class Program
             return null;
         }
 
+        var policy = includePolymorphic ? MatchPolicy.IncludePolymorphic : MatchPolicy.ExcludePolymorphic;
         return methods
-            .Where(m => TypeQueryMatcher.Matches(sig, m))
+            .Where(m => TypeQueryMatcher.Matches(sig, m, policy))
             .ToList();
     }
 
@@ -387,6 +392,8 @@ public static class Program
         Console.WriteLine("  --rebuild                     Rebuild the on-disk cache before searching.");
         Console.WriteLine("  --list-assemblies             List assemblies in the cache with method counts.");
         Console.WriteLine("  --json                        Emit results as JSON on stdout (for piping into tools).");
+        Console.WriteLine("  --polymorphic                 Include matches where a concrete query type binds a method's");
+        Console.WriteLine("                                declared generic parameter (e.g. Func.Invoke for Int32 -> Int32 -> Int32).");
         Console.WriteLine("  --project <path>              Pin context to a specific .sln/.slnx/.csproj file.");
         Console.WriteLine("  --target-framework <tfm>, -f  Pin TFM (e.g. net8.0); overrides on-disk detection.");
         Console.WriteLine("  --max-results <int>           Set maximum number of results (default: no limit)");
