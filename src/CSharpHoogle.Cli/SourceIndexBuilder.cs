@@ -153,18 +153,9 @@ internal static class SourceIndexBuilder
         {
             switch (parent)
             {
-                case ClassDeclarationSyntax cls:
-                    return (FormatTypeRef(cls.Identifier.Text, cls.TypeParameterList),
-                            ExtractTypeParamNames(cls.TypeParameterList));
-                case StructDeclarationSyntax st:
-                    return (FormatTypeRef(st.Identifier.Text, st.TypeParameterList),
-                            ExtractTypeParamNames(st.TypeParameterList));
-                case RecordDeclarationSyntax rd:
-                    return (FormatTypeRef(rd.Identifier.Text, rd.TypeParameterList),
-                            ExtractTypeParamNames(rd.TypeParameterList));
-                case InterfaceDeclarationSyntax iface:
-                    return (FormatTypeRef(iface.Identifier.Text, iface.TypeParameterList),
-                            ExtractTypeParamNames(iface.TypeParameterList));
+                case TypeDeclarationSyntax t:
+                    return (FormatTypeRef(t.Identifier.Text, t.TypeParameterList),
+                            ExtractTypeParamNames(t.TypeParameterList));
                 case BaseNamespaceDeclarationSyntax:
                 case CompilationUnitSyntax:
                     return null;
@@ -248,17 +239,8 @@ internal static class SourceIndexBuilder
         {
             switch (parent)
             {
-                case ClassDeclarationSyntax cls:
-                    names.Add(cls.Identifier.Text);
-                    break;
-                case StructDeclarationSyntax st:
-                    names.Add(st.Identifier.Text);
-                    break;
-                case RecordDeclarationSyntax rd:
-                    names.Add(rd.Identifier.Text);
-                    break;
-                case InterfaceDeclarationSyntax iface:
-                    names.Add(iface.Identifier.Text);
+                case TypeDeclarationSyntax t:
+                    names.Add(t.Identifier.Text);
                     break;
                 case BaseNamespaceDeclarationSyntax:
                 case CompilationUnitSyntax:
