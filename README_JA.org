@@ -5,11 +5,11 @@
 
 [[file:README.org][English]]
 
-* C# 版 Hoogle
+* Hoogle for CSharp
 
 Haskell の [[https://hoogle.haskell.org/][Hoogle]] にならった、C# / .NET 向けの型シグネチャ検索ツール。
 BCL・プロジェクトの NuGet 依存パッケージ・自分のソースコードを対象に、
-型シグネチャ（例: =IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>=）または
+型シグネチャ（例: ~IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>~ ）または
 メソッド完全名に対する大文字小文字を区別しない部分一致で検索できる。
 
 ** 必要環境
@@ -51,9 +51,19 @@ Usage: csharp-hoogle [options] <query>
   --help                        Show this message.
 #+end_example
 
-オプションを指定しない場合、=csharp-hoogle= はカレントディレクトリから親方向に
+オプションを指定しない場合、 =csharp-hoogle= はカレントディレクトリから親方向に
 =.sln= / =.slnx= を探索する。見つからなければカレントディレクトリの =.csproj=
 にフォールバックし、それも無ければ実行中の .NET ランタイムを対象とする。
+
+*** 対象とするプロジェクトの決定
+
+同一階層に ~.csproj~, ~.sln~, ~.slnx~ が存在する場合、 ~.sln~, ~/.slnx~ が優先される。
+
+1. ~--project~ によってプロジェクトが決定されたプロジェクト
+   1. ~--project~ がファイルを指している場合はそのファイル
+   2. ディレクトリを指している場合はそのディレクトリ内にあるプロジェクトファイル
+2. 現在のディレクトリにあるプロジェクトファイル
+3. 上層回にあるプロジェクトファイル(再帰的に登る)
 
 ** 例
 
