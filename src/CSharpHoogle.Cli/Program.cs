@@ -152,64 +152,59 @@ public static class Program
             ? Array.Empty<string>()
             : IndexBuilder.EnumerateSourceFiles(ctx);
 
-        // Three independently-invalidated buckets: BCL is keyed by ctx alone
-        // (rebuild requires --rebuild), deps invalidates on manifest mtime
-        // (project.assets.json, packages.config), source invalidates on .cs mtime.
-        // Edits to a .cs file rebuild only the source bucket; dotnet restore
-        // rebuilds only deps.
-        // `rebuild` short-circuits the TryLoad calls below, so initialize each
-        // out-target up front to keep the compiler's definite-assignment check
-        // happy. Empty lists also serve as the natural default when a bucket
-        // isn't applicable (no deps, no ctx).
         IReadOnlyList<CachedMethod> bclMethods = Array.Empty<CachedMethod>();
         IReadOnlyList<CachedMethod> depMethods = Array.Empty<CachedMethod>();
         IReadOnlyList<CachedMethod> sourceMethods = Array.Empty<CachedMethod>();
 
-        var bclMiss = rebuild || !CacheStore.TryLoadBcl(ctx, out bclMethods);
-        var depsMiss = false;
+        var rebuiltBuckets = new List<CacheBucket>(3);
+        var sw = new Stopwatch();
+        void Log(string msg) => Console.Error.WriteLine(msg);
+        IReadOnlyList<CachedMethod> Build(Func<IReadOnlyList<CachedMethod>> inner)
+        {
+            if (!sw.IsRunning)
+            {
+                if (ctx is not null)
+                {
+                    Console.Error.WriteLine($"Detected project: {ctx.Tfm} ({ctx.Sdk}) from {ctx.OriginPath}");
+                }
+                foreach (var m in depMessages)
+                {
+                    Console.Error.WriteLine(m);
+                }
+                sw.Start();
+            }
+            return inner();
+        }
+
+        bool bclRebuilt;
+        (bclMethods, bclRebuilt) = CacheStore.LoadOrBuild(
+            ctx, CacheBucket.Bcl, Array.Empty<string>(), rebuild,
+            () => Build(() => IndexBuilder.BuildBclMethods(ctx, Log)));
+        if (bclRebuilt) rebuiltBuckets.Add(CacheBucket.Bcl);
+
         if (deps is not null)
         {
-            depsMiss = rebuild || !CacheStore.TryLoadDeps(ctx, depManifests, out depMethods);
+            bool depsRebuilt;
+            (depMethods, depsRebuilt) = CacheStore.LoadOrBuild(
+                ctx, CacheBucket.Deps, depManifests, rebuild,
+                () => Build(() => IndexBuilder.BuildDepMethods(ctx, deps!, Log)));
+            if (depsRebuilt) rebuiltBuckets.Add(CacheBucket.Deps);
         }
-        var sourceMiss = false;
+
         if (ctx is not null)
         {
-            sourceMiss = rebuild || !CacheStore.TryLoadSource(ctx, sourceFiles, out sourceMethods);
+            bool sourceRebuilt;
+            (sourceMethods, sourceRebuilt) = CacheStore.LoadOrBuild(
+                ctx, CacheBucket.Source, sourceFiles, rebuild,
+                () => Build(() => IndexBuilder.BuildSourceMethods(ctx!, Log)));
+            if (sourceRebuilt) rebuiltBuckets.Add(CacheBucket.Source);
         }
 
-        var anyMiss = bclMiss || depsMiss || sourceMiss;
-        if (anyMiss)
+        if (rebuiltBuckets.Count > 0)
         {
-            if (ctx is not null)
-            {
-                Console.Error.WriteLine($"Detected project: {ctx.Tfm} ({ctx.Sdk}) from {ctx.OriginPath}");
-            }
-            foreach (var m in depMessages)
-            {
-                Console.Error.WriteLine(m);
-            }
-
-            var sw = Stopwatch.StartNew();
-            void Log(string msg) => Console.Error.WriteLine(msg);
-
-            if (bclMiss)
-            {
-                bclMethods = IndexBuilder.BuildBclMethods(ctx, Log);
-                CacheStore.SaveBcl(ctx, bclMethods);
-            }
-            if (depsMiss)
-            {
-                depMethods = IndexBuilder.BuildDepMethods(ctx, deps!, Log);
-                CacheStore.SaveDeps(ctx, depMethods);
-            }
-            if (sourceMiss)
-            {
-                sourceMethods = IndexBuilder.BuildSourceMethods(ctx!, Log);
-                CacheStore.SaveSource(ctx, sourceMethods);
-            }
             sw.Stop();
             var total = bclMethods.Count + depMethods.Count + sourceMethods.Count;
-            Console.Error.WriteLine($"Cached {total:N0} methods ({DescribeRebuiltBuckets(bclMiss, depsMiss, sourceMiss)}) in {sw.Elapsed.TotalSeconds:F1}s");
+            Console.Error.WriteLine($"Cached {total:N0} methods ({DescribeRebuiltBuckets(rebuiltBuckets)}) in {sw.Elapsed.TotalSeconds:F1}s");
         }
 
         var assemblyMethods = new List<CachedMethod>(bclMethods.Count + depMethods.Count);
@@ -303,13 +298,17 @@ public static class Program
             .ToList();
     }
 
-    private static string DescribeRebuiltBuckets(bool bcl, bool deps, bool source)
+    private static string DescribeRebuiltBuckets(IReadOnlyList<CacheBucket> rebuilt)
     {
-        var parts = new List<string>(3);
-        if (bcl) parts.Add("bcl");
-        if (deps) parts.Add("deps");
-        if (source) parts.Add("source");
-        return parts.Count == 0 ? "no buckets" : "rebuilt: " + string.Join(", ", parts);
+        if (rebuilt.Count == 0) return "no buckets";
+        var parts = rebuilt.Select(b => b switch
+        {
+            CacheBucket.Bcl => "bcl",
+            CacheBucket.Deps => "deps",
+            CacheBucket.Source => "source",
+            _ => b.ToString().ToLowerInvariant(),
+        });
+        return "rebuilt: " + string.Join(", ", parts);
     }
 
     private static void PrintMatch(CachedMethod m)

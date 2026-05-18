@@ -81,6 +81,32 @@ public static class CacheStore
         => SaveInternal(ctx, CacheBucket.Source, methods);
 
     /// <summary>
+    /// Per-bucket "try load, otherwise build-and-save" orchestration. When
+    /// <paramref name="forceRebuild"/> is set, or the on-disk cache for
+    /// <paramref name="bucket"/> is missing/invalidated/corrupt, calls
+    /// <paramref name="build"/> and persists the result. Otherwise returns the
+    /// loaded methods untouched. The returned <c>Rebuilt</c> flag tells the
+    /// caller whether the bucket was actually rebuilt — used to log which
+    /// buckets contributed to a slow startup.
+    /// </summary>
+    public static (IReadOnlyList<CachedMethod> Methods, bool Rebuilt) LoadOrBuild(
+        ProjectContext? ctx,
+        CacheBucket bucket,
+        IReadOnlyList<string> invalidationPaths,
+        bool forceRebuild,
+        Func<IReadOnlyList<CachedMethod>> build)
+    {
+        if (!forceRebuild && TryLoadInternal(ctx, bucket, invalidationPaths, out var loaded))
+        {
+            return (loaded, false);
+        }
+
+        var built = build();
+        SaveInternal(ctx, bucket, built);
+        return (built, true);
+    }
+
+    /// <summary>
     /// Treats the cache as a miss when any path in <paramref name="invalidationPaths"/>
     /// has a newer mtime than the cache file. An empty cache file (legitimately
     /// no entries — e.g. a project with zero deps) is a hit.
