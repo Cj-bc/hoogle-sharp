@@ -50,7 +50,7 @@ internal static class NuGetForUnityReader
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Count();
                 progress?.Invoke(
-                    $"Indexing {pkgCount} NuGetForUnity packages from {GetFriendlyPath(packagesConfig)}");
+                    $"Indexing {pkgCount} NuGetForUnity packages from {PathDisplay.GetFriendlyPath(packagesConfig)}");
             }
         }
 
@@ -160,14 +160,4 @@ internal static class NuGetForUnityReader
         return null;
     }
 
-    private static string GetFriendlyPath(string fullPath)
-    {
-        var cwd = Environment.CurrentDirectory;
-        if (fullPath.StartsWith(cwd, StringComparison.OrdinalIgnoreCase))
-        {
-            var rel = fullPath.Substring(cwd.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            return rel.Length > 0 ? rel : fullPath;
-        }
-        return fullPath;
-    }
 }

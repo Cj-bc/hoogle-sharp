@@ -55,7 +55,7 @@ internal static class NuGetAssetsReader
             entries.AddRange(read);
             if (packageCount > 0)
             {
-                progress?.Invoke($"Indexing {packageCount} NuGet packages from {GetFriendlyPath(assetsPath)}");
+                progress?.Invoke($"Indexing {packageCount} NuGet packages from {PathDisplay.GetFriendlyPath(assetsPath)}");
             }
         }
 
@@ -220,14 +220,4 @@ internal static class NuGetAssetsReader
         }
     }
 
-    private static string GetFriendlyPath(string fullPath)
-    {
-        var cwd = Environment.CurrentDirectory;
-        if (fullPath.StartsWith(cwd, StringComparison.OrdinalIgnoreCase))
-        {
-            var rel = fullPath.Substring(cwd.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            return rel.Length > 0 ? rel : fullPath;
-        }
-        return fullPath;
-    }
 }
