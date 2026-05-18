@@ -372,4 +372,23 @@ public static class ProjectContextDetector
 
     private static (int, int) TfmKey(string tfm) =>
         TryParseNetTfm(tfm, out var maj, out var min) ? (maj, min) : (0, 0);
+
+    internal static string? ReadAssemblyName(string csprojPath)
+    {
+        if (!File.Exists(csprojPath))
+        {
+            return null;
+        }
+        try
+        {
+            var doc = XDocument.Load(csprojPath);
+            return doc.Descendants("AssemblyName")
+                .Select(e => e.Value.Trim())
+                .FirstOrDefault(s => !string.IsNullOrEmpty(s));
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
+        }
+    }
 }

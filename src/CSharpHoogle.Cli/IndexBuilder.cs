@@ -176,7 +176,7 @@ public static class IndexBuilder
         var all = new List<CachedMethod>();
         foreach (var csproj in ProjectContextDetector.EnumerateCsprojs(ctx.OriginPath))
         {
-            var asmName = ReadAssemblyName(csproj)
+            var asmName = ProjectContextDetector.ReadAssemblyName(csproj)
                 ?? Path.GetFileNameWithoutExtension(csproj);
             var fromCsproj = SourceIndexBuilder.BuildFromCsproj(csproj, asmName, progress);
             all.AddRange(fromCsproj);
@@ -351,25 +351,6 @@ public static class IndexBuilder
             files.AddRange(CompileItemEnumerator.Enumerate(csproj));
         }
         return files;
-    }
-
-    private static string? ReadAssemblyName(string csprojPath)
-    {
-        if (!File.Exists(csprojPath))
-        {
-            return null;
-        }
-        try
-        {
-            var doc = System.Xml.Linq.XDocument.Load(csprojPath);
-            return doc.Descendants("AssemblyName")
-                .Select(e => e.Value.Trim())
-                .FirstOrDefault(s => !string.IsNullOrEmpty(s));
-        }
-        catch (System.Xml.XmlException)
-        {
-            return null;
-        }
     }
 
     private static IReadOnlyList<string> PacksFor(SdkKind sdk) => sdk switch

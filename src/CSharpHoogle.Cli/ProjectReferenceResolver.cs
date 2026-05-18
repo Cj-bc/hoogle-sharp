@@ -59,7 +59,7 @@ internal static class ProjectReferenceResolver
                     continue;
                 }
 
-                var asmName = ReadAssemblyName(refCsproj)
+                var asmName = ProjectContextDetector.ReadAssemblyName(refCsproj)
                               ?? Path.GetFileNameWithoutExtension(refCsproj);
 
                 var debugDll = Path.Combine(refDir, "bin", "Debug", ctx.Tfm, asmName + ".dll");
@@ -160,22 +160,4 @@ internal static class ProjectReferenceResolver
         return name.Length == 0 ? null : name;
     }
 
-    private static string? ReadAssemblyName(string csprojPath)
-    {
-        if (!File.Exists(csprojPath))
-        {
-            return null;
-        }
-        try
-        {
-            var doc = XDocument.Load(csprojPath);
-            return doc.Descendants("AssemblyName")
-                .Select(e => e.Value.Trim())
-                .FirstOrDefault(s => !string.IsNullOrEmpty(s));
-        }
-        catch (System.Xml.XmlException)
-        {
-            return null;
-        }
-    }
 }
