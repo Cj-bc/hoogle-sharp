@@ -22,16 +22,6 @@ case-insensitive substring on the method's full name.
 dotnet build
 #+end_src
 
-** Run
-
-From the repository root:
-
-#+begin_src sh
-dotnet run --project src/CSharpHoogle.Cli -- <query>
-#+end_src
-
-Or, after publishing, invoke the produced =csharp-hoogle= executable directly.
-
 ** Usage
 
 #+begin_example
@@ -54,6 +44,19 @@ Usage: csharp-hoogle [options] <query>
 Without overrides, =csharp-hoogle= walks up from the current directory looking
 for a =.sln= / =.slnx=; if none is found, it falls back to a =.csproj= in the
 current directory; if that also fails, it uses the running .NET runtime.
+
+*** Project selection strategy
+
+Currently, it can detect ~.csproj~, ~.sln~, ~.slnx~ as project file. If there're both ~.csproj~ anm ~.sln~, ~.slnx~ at the same directory, ~.sln~, ~.slnx~ take priority.
+
+1. project file specified by ~--project~ flag.
+  a. When it is a project file, that will be used.
+  b. When it is a directory, find valid project file under that.
+  c. otherwise, result in error.
+2. project files at CWD.
+3. project files in parent directories.
+4. If no projects are found, it fall
+backs to use BCL oely.
 
 ** Examples
 
