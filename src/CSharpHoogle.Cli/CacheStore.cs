@@ -157,7 +157,7 @@ public static class CacheStore
         return Convert.ToHexString(hash).Substring(0, 8).ToLowerInvariant();
     }
 
-    private static string SanitizeTag(string raw)
+    private static string SanitizeFilenameTag(string raw)
     {
         var sb = new StringBuilder(raw.Length);
         foreach (var ch in raw)
@@ -167,15 +167,8 @@ public static class CacheStore
         return sb.ToString().ToLowerInvariant().Trim('-');
     }
 
-    private static string GetRuntimeTag()
-    {
-        // "NET 8.0.26" etc. → "net-8.0.26" safe for a filename.
-        var desc = RuntimeInformation.FrameworkDescription;
-        var sb = new StringBuilder(desc.Length);
-        foreach (var ch in desc)
-        {
-            sb.Append(char.IsLetterOrDigit(ch) || ch == '.' || ch == '-' ? ch : '-');
-        }
-        return sb.ToString().ToLowerInvariant().Trim('-');
-    }
+    private static string SanitizeTag(string raw) => SanitizeFilenameTag(raw);
+
+    private static string GetRuntimeTag() =>
+        SanitizeFilenameTag(RuntimeInformation.FrameworkDescription);
 }
