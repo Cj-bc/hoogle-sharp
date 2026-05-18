@@ -25,18 +25,6 @@ public sealed record ProjectContext(string Tfm, SdkKind Sdk, string OriginPath);
 
 public static class ProjectContextDetector
 {
-    // Tried in priority order when a Unity csproj declares a TFM that the strict
-    // .NET-Core gate rejects. NuGetForUnity packages typically ship lib dirs for
-    // these moniker names.
-    private static readonly string[] UnityFallbackTfms =
-    {
-        "netstandard2.1",
-        "netstandard2.0",
-        "net48",
-        "net471",
-        "net46",
-    };
-
     /// <summary>
     /// Walk-up detection per spec: solution at cwd → solution in any parent →
     /// csproj at cwd only. Returns null when nothing matches; callers should
@@ -298,7 +286,7 @@ public static class ProjectContextDetector
         // ref packs still won't be used — the index falls through to runtime BCL).
         if (HasUnityPackagesConfig(csprojPath))
         {
-            foreach (var preferred in UnityFallbackTfms)
+            foreach (var preferred in UnityFallbacks.Tfms)
             {
                 if (rawTfms.Contains(preferred, StringComparer.OrdinalIgnoreCase))
                 {

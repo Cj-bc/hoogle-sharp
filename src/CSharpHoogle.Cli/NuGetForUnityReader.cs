@@ -11,15 +11,6 @@ namespace CSharpHoogle.Cli;
 /// </summary>
 internal static class NuGetForUnityReader
 {
-    private static readonly string[] UnityFallbackTfms =
-    {
-        "netstandard2.1",
-        "netstandard2.0",
-        "net48",
-        "net471",
-        "net46",
-    };
-
     internal sealed record Result(
         IReadOnlyList<DependencyEntry> Entries,
         IReadOnlyList<string> ManifestPaths);
@@ -141,7 +132,7 @@ internal static class NuGetForUnityReader
             return exact;
         }
 
-        foreach (var fb in UnityFallbackTfms)
+        foreach (var fb in UnityFallbacks.Tfms)
         {
             var candidate = Path.Combine(libRoot, fb);
             if (Directory.Exists(candidate))
