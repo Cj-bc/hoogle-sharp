@@ -81,7 +81,3 @@ csharp-hoogle --polymorphic "int -> int -> int"
 #+begin_src sh
 dotnet test
 #+end_src
-
-** License
-
-No license file is currently included in this repository.
