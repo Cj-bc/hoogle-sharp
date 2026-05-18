@@ -46,7 +46,7 @@ internal static class NuGetForUnityReader
 
             if (read.Count > 0)
             {
-                var pkgCount = read.Select(e => e.SourceName)
+                var pkgCount = read.Select(e => e.Source.Name)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Count();
                 progress?.Invoke(
@@ -117,8 +117,7 @@ internal static class NuGetForUnityReader
                 entries.Add(new DependencyEntry(
                     dll,
                     File.Exists(xml) ? xml : null,
-                    "package",
-                    id!));
+                    new MethodSource("package", id!)));
             }
         }
         return entries;

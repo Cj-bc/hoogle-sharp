@@ -1,16 +1,14 @@
 namespace CSharpHoogle.Cli;
 
 /// <summary>
-/// One indexable assembly discovered from a project's deps. <see cref="SourceKind"/>
-/// is <c>"package"</c> for NuGet packages (assets.json or NuGetForUnity) and
-/// <c>"project"</c> for sibling project bin output. Mirrors the
-/// <see cref="MethodSource"/> shape so the IndexBuilder can tag methods directly.
+/// One indexable assembly discovered from a project's deps. <see cref="Source"/>
+/// uses <see cref="MethodSource.Kind"/> <c>"package"</c> for NuGet packages
+/// (assets.json or NuGetForUnity) and <c>"project"</c> for sibling project bin output.
 /// </summary>
 public sealed record DependencyEntry(
     string AssemblyPath,
     string? XmlPath,
-    string SourceKind,
-    string SourceName);
+    MethodSource Source);
 
 /// <summary>
 /// Resolved dep set for a <see cref="ProjectContext"/>. <see cref="ManifestPaths"/>

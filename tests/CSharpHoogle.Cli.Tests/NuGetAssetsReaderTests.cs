@@ -99,17 +99,17 @@ public class NuGetAssetsReaderTests : IDisposable
         var result = NuGetAssetsReader.Read(ctx, messages.Add);
 
         Assert.Single(result.ManifestPaths);
-        var names = result.Entries.Select(e => e.SourceName).OrderBy(s => s).ToList();
+        var names = result.Entries.Select(e => e.Source.Name).OrderBy(s => s).ToList();
         Assert.Contains("Newtonsoft.Json", names);
         Assert.Contains("OnlyRuntime", names);
         Assert.DoesNotContain("PlaceholderPackage", names);
 
-        var nj = result.Entries.First(e => e.SourceName == "Newtonsoft.Json");
+        var nj = result.Entries.First(e => e.Source.Name == "Newtonsoft.Json");
         Assert.Equal(njDll, nj.AssemblyPath);
         Assert.NotNull(nj.XmlPath);
-        Assert.Equal("package", nj.SourceKind);
+        Assert.Equal("package", nj.Source.Kind);
 
-        var or = result.Entries.First(e => e.SourceName == "OnlyRuntime");
+        var or = result.Entries.First(e => e.Source.Name == "OnlyRuntime");
         Assert.Equal(orDll, or.AssemblyPath);
         Assert.Null(or.XmlPath);
 

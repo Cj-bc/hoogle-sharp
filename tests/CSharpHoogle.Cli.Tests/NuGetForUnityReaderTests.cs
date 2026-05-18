@@ -69,12 +69,12 @@ public class NuGetForUnityReaderTests : IDisposable
 
         Assert.Single(result.ManifestPaths);
 
-        var nj = Assert.Single(result.Entries, e => e.SourceName == "Newtonsoft.Json");
+        var nj = Assert.Single(result.Entries, e => e.Source.Name == "Newtonsoft.Json");
         Assert.Equal(njNs21Dll, nj.AssemblyPath); // exact-TFM match wins over net45
         Assert.NotNull(nj.XmlPath);
-        Assert.Equal("package", nj.SourceKind);
+        Assert.Equal("package", nj.Source.Kind);
 
-        var s = Assert.Single(result.Entries, e => e.SourceName == "Serilog");
+        var s = Assert.Single(result.Entries, e => e.Source.Name == "Serilog");
         Assert.Equal(serilogDll, s.AssemblyPath); // ns2.0 fallback
         Assert.Null(s.XmlPath);
 

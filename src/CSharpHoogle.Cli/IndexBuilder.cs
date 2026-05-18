@@ -143,11 +143,10 @@ public static class IndexBuilder
             try
             {
                 var asm = loader.LoadFromAssemblyPath(entry.AssemblyPath);
-                var source = new MethodSource(entry.SourceKind, entry.SourceName);
                 var methods = MethodIndexBuilder.BuildFromAssembly(asm, docs);
                 foreach (var m in methods)
                 {
-                    all.Add(Project(m, source));
+                    all.Add(Project(m, entry.Source));
                     depMethodCount++;
                 }
                 depAssemblyCount++;

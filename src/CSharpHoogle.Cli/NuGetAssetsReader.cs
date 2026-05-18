@@ -169,8 +169,7 @@ internal static class NuGetAssetsReader
                 entries.Add(new DependencyEntry(
                     dllPath,
                     File.Exists(xmlPath) ? xmlPath : null,
-                    "package",
-                    packageId));
+                    new MethodSource("package", packageId)));
                 added = true;
             }
 

@@ -63,8 +63,8 @@ public class ProjectReferenceResolverTests : IDisposable
 
         var entry = Assert.Single(entries);
         Assert.Equal(debugDll, entry.AssemblyPath);
-        Assert.Equal("project", entry.SourceKind);
-        Assert.Equal("MyLib", entry.SourceName);
+        Assert.Equal("project", entry.Source.Kind);
+        Assert.Equal("MyLib", entry.Source.Name);
         Assert.NotNull(entry.XmlPath);
         Assert.Empty(messages);
     }
@@ -101,7 +101,7 @@ public class ProjectReferenceResolverTests : IDisposable
 
         var entry = Assert.Single(entries);
         Assert.Equal(releaseDll, entry.AssemblyPath);
-        Assert.Equal("Lib", entry.SourceName); // falls back to filename when AssemblyName missing
+        Assert.Equal("Lib", entry.Source.Name); // falls back to filename when AssemblyName missing
     }
 
     [Fact]
@@ -164,8 +164,8 @@ public class ProjectReferenceResolverTests : IDisposable
 
         var entry = Assert.Single(entries);
         Assert.Equal(Path.GetFullPath(dll), entry.AssemblyPath);
-        Assert.Equal("reference", entry.SourceKind);
-        Assert.Equal("MyVendor", entry.SourceName);
+        Assert.Equal("reference", entry.Source.Kind);
+        Assert.Equal("MyVendor", entry.Source.Name);
         Assert.NotNull(entry.XmlPath);
     }
 
@@ -196,7 +196,7 @@ public class ProjectReferenceResolverTests : IDisposable
         var entries = ProjectReferenceResolver.Resolve(ctx, _ => { });
 
         var entry = Assert.Single(entries);
-        Assert.Equal("MyVendor", entry.SourceName);
+        Assert.Equal("MyVendor", entry.Source.Name);
     }
 
     [Fact]
@@ -262,7 +262,7 @@ public class ProjectReferenceResolverTests : IDisposable
 
         var entry = Assert.Single(entries);
         Assert.Equal(Path.GetFullPath(debugDll), entry.AssemblyPath);
-        Assert.Equal("project", entry.SourceKind);
+        Assert.Equal("project", entry.Source.Kind);
     }
 
     [Fact]

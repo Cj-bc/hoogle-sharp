@@ -85,8 +85,7 @@ internal static class ProjectReferenceResolver
                 entries.Add(new DependencyEntry(
                     dll,
                     File.Exists(xml) ? xml : null,
-                    "project",
-                    asmName));
+                    new MethodSource("project", asmName)));
             }
 
             entries.AddRange(ResolveReferenceEntries(doc, csprojDir, seen, progress));
@@ -137,8 +136,7 @@ internal static class ProjectReferenceResolver
             yield return new DependencyEntry(
                 dllAbs,
                 File.Exists(xml) ? xml : null,
-                "reference",
-                asmName!);
+                new MethodSource("reference", asmName!));
         }
     }
 
