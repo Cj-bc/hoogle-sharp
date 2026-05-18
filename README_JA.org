@@ -1,38 +1,38 @@
 #+begin_quote
 [!WARNING]
-*Important*: This project is under development and most code is written by AIs. I'll review them later, but be aware of it.
+*重要*: このプロジェクトは開発中であり、コードの大半は AI が書いている。後で見直す予定だが、利用時は留意すること。
 #+end_quote
 
-[[file:README_JA.org][日本語]]
+[[file:README.org][English]]
 
-* Hoogle for C#
+* C# 版 Hoogle
 
-A type-signature search tool for C# / .NET, modeled after Haskell's [[https://hoogle.haskell.org/][Hoogle]].
-Search the BCL, your project's NuGet dependencies, and your own source code by
-type signature (e.g. =IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>=) or by
-case-insensitive substring on the method's full name.
+Haskell の [[https://hoogle.haskell.org/][Hoogle]] にならった、C# / .NET 向けの型シグネチャ検索ツール。
+BCL・プロジェクトの NuGet 依存パッケージ・自分のソースコードを対象に、
+型シグネチャ（例: =IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>=）または
+メソッド完全名に対する大文字小文字を区別しない部分一致で検索できる。
 
-** Requirements
+** 必要環境
 
 - .NET 8.0 SDK
 
-** Build
+** ビルド
 
 #+begin_src sh
 dotnet build
 #+end_src
 
-** Run
+** 実行
 
-From the repository root:
+リポジトリのルートから:
 
 #+begin_src sh
 dotnet run --project src/CSharpHoogle.Cli -- <query>
 #+end_src
 
-Or, after publishing, invoke the produced =csharp-hoogle= executable directly.
+publish 後は、生成された =csharp-hoogle= 実行ファイルを直接呼び出してもよい。
 
-** Usage
+** 使い方
 
 #+begin_example
 Usage: csharp-hoogle [options] <query>
@@ -51,37 +51,37 @@ Usage: csharp-hoogle [options] <query>
   --help                        Show this message.
 #+end_example
 
-Without overrides, =csharp-hoogle= walks up from the current directory looking
-for a =.sln= / =.slnx=; if none is found, it falls back to a =.csproj= in the
-current directory; if that also fails, it uses the running .NET runtime.
+オプションを指定しない場合、=csharp-hoogle= はカレントディレクトリから親方向に
+=.sln= / =.slnx= を探索する。見つからなければカレントディレクトリの =.csproj=
+にフォールバックし、それも無ければ実行中の .NET ランタイムを対象とする。
 
-** Examples
+** 例
 
-Signature search:
+シグネチャ検索:
 
 #+begin_src sh
 csharp-hoogle "IEnumerable<T> -> Func<T,bool> -> IEnumerable<T>"
 #+end_src
 
-Substring search on the method name:
+メソッド名の部分一致検索:
 
 #+begin_src sh
 csharp-hoogle Select
 #+end_src
 
-Polymorphic signature search (lets a concrete type bind a method's generic
-parameter):
+ポリモーフィックなシグネチャ検索（具体型がメソッドのジェネリック型引数を束縛
+する一致も含める）:
 
 #+begin_src sh
 csharp-hoogle --polymorphic "int -> int -> int"
 #+end_src
 
-** Tests
+** テスト
 
 #+begin_src sh
 dotnet test
 #+end_src
 
-** License
+** ライセンス
 
-No license file is currently included in this repository.
+現時点ではライセンスファイルを同梱していない。
