@@ -50,28 +50,6 @@ public enum MatchPolicy
 
 public static class TypeQueryMatcher
 {
-    private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["bool"] = "Boolean",
-        ["byte"] = "Byte",
-        ["sbyte"] = "SByte",
-        ["short"] = "Int16",
-        ["ushort"] = "UInt16",
-        ["int"] = "Int32",
-        ["uint"] = "UInt32",
-        ["long"] = "Int64",
-        ["ulong"] = "UInt64",
-        ["float"] = "Single",
-        ["double"] = "Double",
-        ["decimal"] = "Decimal",
-        ["char"] = "Char",
-        ["string"] = "String",
-        ["object"] = "Object",
-        ["void"] = "Void",
-        ["nint"] = "IntPtr",
-        ["nuint"] = "UIntPtr",
-    };
-
     public static bool Matches(SignatureQuery query, CachedMethod method, MatchPolicy policy = MatchPolicy.ExcludePolymorphic)
     {
         // Instance methods get a synthetic, OPTIONAL receiver slot prepended
@@ -304,8 +282,8 @@ public static class TypeQueryMatcher
 
     private static bool SimpleNameEquals(string a, string b)
     {
-        var na = Aliases.TryGetValue(a, out var an) ? an : a;
-        var nb = Aliases.TryGetValue(b, out var bn) ? bn : b;
+        var na = CSharpKeywordAliases.TryGetCanonicalIgnoreCase(a, out var an) ? an : a;
+        var nb = CSharpKeywordAliases.TryGetCanonicalIgnoreCase(b, out var bn) ? bn : b;
         return string.Equals(na, nb, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -318,7 +296,7 @@ public static class TypeQueryMatcher
     private static bool IsQueryWildcard(string name)
     {
         if (string.IsNullOrEmpty(name)) return false;
-        if (Aliases.ContainsKey(name)) return false;
+        if (CSharpKeywordAliases.TryGetCanonicalIgnoreCase(name, out _)) return false;
         if (name.Length == 1) return char.IsLetter(name[0]);
         if (name[0] == 'T' && char.IsUpper(name[1])) return true;
         return false;

@@ -309,7 +309,7 @@ public static class IndexBuilder
         {
             if (token.Length == 0) return;
             var t = token.ToString();
-            sb.Append(KeywordAlias(t) ?? t);
+            sb.Append(CSharpKeywordAliases.TryGetCanonical(t, out var canonical) ? canonical : t);
             token.Clear();
         }
 
@@ -336,29 +336,6 @@ public static class IndexBuilder
         FlushToken();
         return sb.ToString();
     }
-
-    private static string? KeywordAlias(string token) => token switch
-    {
-        "bool" => "Boolean",
-        "byte" => "Byte",
-        "sbyte" => "SByte",
-        "char" => "Char",
-        "decimal" => "Decimal",
-        "double" => "Double",
-        "float" => "Single",
-        "int" => "Int32",
-        "uint" => "UInt32",
-        "long" => "Int64",
-        "ulong" => "UInt64",
-        "short" => "Int16",
-        "ushort" => "UInt16",
-        "object" => "Object",
-        "string" => "String",
-        "void" => "Void",
-        "nint" => "IntPtr",
-        "nuint" => "UIntPtr",
-        _ => null,
-    };
 
     /// <summary>
     /// Returns every .cs file the source pass would index for the given
