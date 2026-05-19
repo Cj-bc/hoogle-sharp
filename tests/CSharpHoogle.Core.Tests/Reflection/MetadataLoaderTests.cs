@@ -119,4 +119,39 @@ public class MetadataLoaderTests
             Directory.Delete(extraDir, recursive: true);
         }
     }
+
+    [Fact]
+    public void Constructor_RuntimeDirEntriesWin_OverUserSearchDir_OnFilenameCollision()
+    {
+        // Pins the "runtime dir is enumerated first, filename-dedup makes
+        // first win" invariant in MetadataLoader.ctor. If a future refactor
+        // swaps the enumeration order (user dirs before runtime), reorders
+        // the loops, or drops the seenFileNames HashSet, a user-supplied
+        // copy of a BCL-named DLL would replace the runtime's copy in the
+        // resolver — and MetadataLoadContext would either pick up a stale
+        // assembly or throw FileLoadException("already been loaded").
+        var userDir = Path.Combine(
+            Path.GetTempPath(),
+            "hoogle-loader-arity-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(userDir);
+        try
+        {
+            // Pick any runtime DLL that's guaranteed to exist and put a
+            // same-named file in the user dir. Content doesn't matter; this
+            // test only verifies path-selection, not load semantics.
+            var runtimePath = Path.Combine(RuntimeDir, "System.Runtime.dll");
+            Assert.True(File.Exists(runtimePath), "runtime probe assumption broken");
+            var userPath = Path.Combine(userDir, "System.Runtime.dll");
+            File.WriteAllBytes(userPath, new byte[] { 0x00, 0x01, 0x02 });
+
+            using var loader = new MetadataLoader(new[] { userDir }, includeRuntimeDir: true);
+
+            Assert.Contains(runtimePath, loader.SearchPaths);
+            Assert.DoesNotContain(userPath, loader.SearchPaths);
+        }
+        finally
+        {
+            Directory.Delete(userDir, recursive: true);
+        }
+    }
 }
