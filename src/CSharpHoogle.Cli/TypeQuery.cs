@@ -27,7 +27,40 @@ public sealed record SignatureQuery(
 public static class TypeQuery
 {
     public static bool LooksLikeSignatureQuery(string text)
-        => text.Contains("->", StringComparison.Ordinal);
+    {
+        // Require non-empty trimmed text on BOTH sides of every "->" — a stray
+        // arrow like "Foo->" or "-> Bar" is almost certainly a substring search
+        // typo, not a real signature, and routing it through ParseSignature
+        // would just produce a FormatException.
+        var trimmed = text.AsSpan().Trim();
+        var index = trimmed.IndexOf("->", StringComparison.Ordinal);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        var lhs = trimmed[..index].Trim();
+        if (lhs.IsEmpty)
+        {
+            return false;
+        }
+
+        var rhs = trimmed[(index + 2)..].Trim();
+        if (rhs.IsEmpty)
+        {
+            return false;
+        }
+
+        // If the RHS itself contains another arrow, recurse so we validate
+        // every segment ("A -> B -> C" is real; "A -> -> C" is not).
+        var next = rhs.IndexOf("->", StringComparison.Ordinal);
+        if (next < 0)
+        {
+            return true;
+        }
+        // RHS is "X -> Y..." — both halves must be non-empty after trimming.
+        return LooksLikeSignatureQuery(rhs.ToString());
+    }
 
     /// <summary>
     /// Parses <paramref name="text"/> as <c>T1 -&gt; T2 -&gt; ... -&gt; TN</c>.

@@ -246,6 +246,99 @@ public class SourceIndexBuilderTests : IDisposable
     }
 
     [Fact]
+    public void BuildFromCsproj_PublicMethodInsidePrivateNestedClass_NotIndexed()
+    {
+        // Even though Hidden.DoWork is `public`, external callers can never
+        // reach it because the containing nested type is `private`. The source
+        // walker must AND containing-type accessibility into its filter.
+        var csproj = Path.Combine(_tempDir, "Nest.csproj");
+        File.WriteAllText(csproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(_tempDir, "Outer.cs"), """
+            namespace Nest;
+            public class Outer
+            {
+                private class Hidden
+                {
+                    public void DoWork() {}
+                }
+
+                public void Visible() {}
+            }
+            """);
+
+        var methods = SourceIndexBuilder.BuildFromCsproj(csproj, "Nest");
+
+        Assert.DoesNotContain(methods, m => m.FullName == "Nest.Outer.Hidden.DoWork");
+        // Baseline: the sibling method on the accessible outer must still be indexed.
+        Assert.Contains(methods, m => m.FullName == "Nest.Outer.Visible");
+    }
+
+    [Fact]
+    public void BuildFromCsproj_PublicMethodInsidePublicNestedClass_Indexed()
+    {
+        // Every level on the parent chain is accessible, so DoWork stays in.
+        var csproj = Path.Combine(_tempDir, "Nest2.csproj");
+        File.WriteAllText(csproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(_tempDir, "Outer.cs"), """
+            namespace Nest2;
+            public class Outer
+            {
+                public class Visible
+                {
+                    public void DoWork() {}
+                }
+            }
+            """);
+
+        var methods = SourceIndexBuilder.BuildFromCsproj(csproj, "Nest2");
+
+        Assert.Contains(methods, m => m.FullName == "Nest2.Outer.Visible.DoWork");
+    }
+
+    [Fact]
+    public void BuildFromCsproj_MethodInsideFileScopedType_NotIndexed()
+    {
+        // `file class` is more restrictive than internal — it's invisible
+        // outside the declaring file, so cross-file indexing should skip it.
+        var csproj = Path.Combine(_tempDir, "Filed.csproj");
+        File.WriteAllText(csproj, """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net8.0</TargetFramework>
+                <LangVersion>11.0</LangVersion>
+              </PropertyGroup>
+            </Project>
+            """);
+        File.WriteAllText(Path.Combine(_tempDir, "Filed.cs"), """
+            namespace Filed;
+
+            file class Hidden
+            {
+                public void DoWork() {}
+            }
+
+            public class Visible
+            {
+                public void Reachable() {}
+            }
+            """);
+
+        var methods = SourceIndexBuilder.BuildFromCsproj(csproj, "Filed");
+
+        Assert.DoesNotContain(methods, m => m.FullName == "Filed.Hidden.DoWork");
+        // Baseline: a regular type in the same file still flows through.
+        Assert.Contains(methods, m => m.FullName == "Filed.Visible.Reachable");
+    }
+
+    [Fact]
     public void BuildFromCsproj_ExtensionMethod_LeavesDeclaringTypeNull()
     {
         // Extension methods already place the receiver in parameter[0]; the

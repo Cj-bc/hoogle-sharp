@@ -194,6 +194,37 @@ internal static class SourceIndexBuilder
 
     private static bool IsAccessible(MethodDeclarationSyntax method)
     {
+        if (!IsMemberAccessible(method))
+        {
+            return false;
+        }
+
+        // A method is reachable from outside only if every enclosing type is
+        // also reachable. A public method inside a private nested class is
+        // effectively unreachable, so we must walk the parent chain.
+        SyntaxNode? parent = method.Parent;
+        while (parent is not null)
+        {
+            switch (parent)
+            {
+                case TypeDeclarationSyntax t:
+                    if (!IsTypeAccessible(t))
+                    {
+                        return false;
+                    }
+                    break;
+                case BaseNamespaceDeclarationSyntax:
+                case CompilationUnitSyntax:
+                    return true;
+            }
+            parent = parent.Parent;
+        }
+
+        return true;
+    }
+
+    private static bool IsMemberAccessible(MethodDeclarationSyntax method)
+    {
         // Rule of thumb: skip private members. Internal/protected/public all
         // get indexed — same lenient policy the assembly walk uses (anything
         // visible outside its file is fair game). Default visibility on
@@ -202,8 +233,9 @@ internal static class SourceIndexBuilder
         var hasPublic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
         var hasInternal = method.Modifiers.Any(m => m.IsKind(SyntaxKind.InternalKeyword));
         var hasProtected = method.Modifiers.Any(m => m.IsKind(SyntaxKind.ProtectedKeyword));
+        var hasFile = method.Modifiers.Any(m => m.IsKind(SyntaxKind.FileKeyword));
 
-        if (hasPrivate)
+        if (hasPrivate || hasFile)
         {
             return false;
         }
@@ -229,6 +261,61 @@ internal static class SourceIndexBuilder
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Returns true when this type declaration is reachable from outside the
+    /// declaring file. Private nested types and <c>file</c>-scoped types are
+    /// rejected; everything else (public/internal/protected, or no modifier
+    /// at all) is treated as accessible — same lenient policy as the member
+    /// check, mirroring how <see cref="Type.IsVisible"/> includes internal
+    /// types on the assembly side.
+    /// </summary>
+    private static bool IsTypeAccessible(TypeDeclarationSyntax type)
+    {
+        if (type.Modifiers.Any(m => m.IsKind(SyntaxKind.FileKeyword)))
+        {
+            return false;
+        }
+
+        var hasPrivate = type.Modifiers.Any(m => m.IsKind(SyntaxKind.PrivateKeyword));
+        if (hasPrivate)
+        {
+            return false;
+        }
+
+        // Top-level types default to internal (treated as accessible). Nested
+        // types in classes/structs/records default to private; nested types in
+        // interfaces default to public. Treat the absent-modifier top-level
+        // case as accessible for consistency with the existing lenient policy.
+        var hasPublic = type.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
+        var hasInternal = type.Modifiers.Any(m => m.IsKind(SyntaxKind.InternalKeyword));
+        var hasProtected = type.Modifiers.Any(m => m.IsKind(SyntaxKind.ProtectedKeyword));
+        if (hasPublic || hasInternal || hasProtected)
+        {
+            return true;
+        }
+
+        // No modifier: figure out where this type is declared to decide the default.
+        var parent = type.Parent;
+        while (parent is not null)
+        {
+            switch (parent)
+            {
+                case InterfaceDeclarationSyntax:
+                    return true;
+                case ClassDeclarationSyntax or StructDeclarationSyntax or RecordDeclarationSyntax:
+                    // Nested in a class/struct/record — default is private.
+                    return false;
+                case BaseNamespaceDeclarationSyntax:
+                case CompilationUnitSyntax:
+                    // Top-level: defaults to internal, which we treat as accessible.
+                    return true;
+            }
+            parent = parent.Parent;
+        }
+
+        return true;
     }
 
     private static IReadOnlyList<string>? GetContainingTypeNames(MethodDeclarationSyntax method)
