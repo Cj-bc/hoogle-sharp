@@ -47,7 +47,7 @@ current directory; if that also fails, it uses the running .NET runtime.
 
 *** Project selection strategy
 
-Currently, it can detect ~.csproj~, ~.sln~, ~.slnx~ as project file. If there're both ~.csproj~ anm ~.sln~, ~.slnx~ at the same directory, ~.sln~, ~.slnx~ take priority.
+Currently, it can detect ~.csproj~, ~.sln~, ~.slnx~ as project file. If there're both ~.csproj~ and ~.sln~, ~.slnx~ at the same directory, ~.sln~, ~.slnx~ take priority.
 
 1. project file specified by ~--project~ flag.
   a. When it is a project file, that will be used.
@@ -55,8 +55,7 @@ Currently, it can detect ~.csproj~, ~.sln~, ~.slnx~ as project file. If there're
   c. otherwise, result in error.
 2. project files at CWD.
 3. project files in parent directories.
-4. If no projects are found, it fall
-backs to use BCL oely.
+4. If no projects are found, it falls back to use BCL only.
 
 ** Examples
 

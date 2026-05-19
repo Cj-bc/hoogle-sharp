@@ -354,9 +354,8 @@ public static class IndexBuilder
 
     private static IReadOnlyList<string> PacksFor(SdkKind sdk) => sdk switch
     {
-        SdkKind.Web => new[] { "Microsoft.NETCore.App.Ref", "Microsoft.AspNetCore.App.Ref" },
-        SdkKind.Razor => new[] { "Microsoft.NETCore.App.Ref", "Microsoft.AspNetCore.App.Ref" },
-        SdkKind.Worker => new[] { "Microsoft.NETCore.App.Ref", "Microsoft.AspNetCore.App.Ref" },
+        SdkKind.Web or SdkKind.Razor or SdkKind.Worker
+            => new[] { "Microsoft.NETCore.App.Ref", "Microsoft.AspNetCore.App.Ref" },
         _ => new[] { "Microsoft.NETCore.App.Ref" },
     };
 
