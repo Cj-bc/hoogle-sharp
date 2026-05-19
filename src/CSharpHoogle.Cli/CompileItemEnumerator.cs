@@ -105,9 +105,6 @@ internal static class CompileItemEnumerator
             var afterGlob = pattern.Substring(globStart + 2)
                 .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-            // Trailing pattern is what the matcher applies to each candidate
-            // (e.g. "**/*.cs" → search "*.cs" recursively).
-            var searchPattern = string.IsNullOrEmpty(afterGlob) ? "*.cs" : afterGlob;
             var searchRoot = Path.GetFullPath(Path.Combine(csprojDir, literalPrefix));
 
             if (!Directory.Exists(searchRoot))
@@ -115,11 +112,56 @@ internal static class CompileItemEnumerator
                 yield break;
             }
 
-            foreach (var file in Directory.EnumerateFiles(searchRoot, searchPattern, SearchOption.AllDirectories))
+            // Directory.EnumerateFiles' searchPattern doesn't honor path
+            // separators — "Foo/*.cs" matches nothing. When `afterGlob` has
+            // separators (e.g. "**/Foo/*.cs", "src/**/Gen/*.cs") we need to
+            // walk recursively for the trailing filename pattern, then filter
+            // the results so the *relative* path matches the post-** fragment.
+            var sepIdx = afterGlob.LastIndexOfAny(new[]
+            {
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar,
+            });
+
+            string filePattern;
+            string? pathPart;
+            if (sepIdx < 0)
+            {
+                // Simple case: "**/*.cs" or "**" (no trailing path segments).
+                filePattern = string.IsNullOrEmpty(afterGlob) ? "*.cs" : afterGlob;
+                pathPart = null;
+            }
+            else
+            {
+                filePattern = afterGlob.Substring(sepIdx + 1);
+                if (string.IsNullOrEmpty(filePattern))
+                {
+                    filePattern = "*.cs";
+                }
+                // Normalize the directory part to use the platform separator so
+                // suffix comparisons work regardless of how the csproj quoted it.
+                pathPart = afterGlob.Substring(0, sepIdx)
+                    .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+                    .Trim(Path.DirectorySeparatorChar);
+            }
+
+            foreach (var file in Directory.EnumerateFiles(searchRoot, filePattern, SearchOption.AllDirectories))
             {
                 if (IsExcludedDir(file, csprojDir))
                 {
                     continue;
+                }
+                if (pathPart is not null)
+                {
+                    // The path of `file` relative to the search root must end
+                    // with `<pathPart>/<filename>` — i.e. one of the parent
+                    // directories along the walk must satisfy the literal part.
+                    var relToRoot = Path.GetRelativePath(searchRoot, file);
+                    var relDir = Path.GetDirectoryName(relToRoot) ?? string.Empty;
+                    if (!HasTrailingPathSegments(relDir, pathPart))
+                    {
+                        continue;
+                    }
                 }
                 yield return Path.GetFullPath(file);
             }
@@ -168,9 +210,34 @@ internal static class CompileItemEnumerator
         // Match obj/ and bin/ as path segments under the project dir — this is
         // what the SDK's default Compile glob excludes. Comparing with leading
         // separators avoids false positives for files literally named `objects`.
+        // Library/, Temp/, Packages/, ProjectSettings/ are Unity-managed trees
+        // that hold thousands of generated .cs files which must never be indexed.
         var rel = Path.GetRelativePath(csprojDir, filePath);
         var sep = Path.DirectorySeparatorChar;
         return rel.StartsWith($"obj{sep}", StringComparison.OrdinalIgnoreCase)
-            || rel.StartsWith($"bin{sep}", StringComparison.OrdinalIgnoreCase);
+            || rel.StartsWith($"bin{sep}", StringComparison.OrdinalIgnoreCase)
+            || rel.StartsWith($"Library{sep}", StringComparison.OrdinalIgnoreCase)
+            || rel.StartsWith($"Temp{sep}", StringComparison.OrdinalIgnoreCase)
+            || rel.StartsWith($"Packages{sep}", StringComparison.OrdinalIgnoreCase)
+            || rel.StartsWith($"ProjectSettings{sep}", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Returns true if <paramref name="relDir"/> ends with <paramref name="suffix"/>
+    /// as whole path segments. Both inputs use the platform separator; comparison
+    /// is OrdinalIgnoreCase to match filesystem semantics on Windows/macOS.
+    /// </summary>
+    private static bool HasTrailingPathSegments(string relDir, string suffix)
+    {
+        if (string.IsNullOrEmpty(suffix))
+        {
+            return true;
+        }
+        if (relDir.Equals(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        var sep = Path.DirectorySeparatorChar;
+        return relDir.EndsWith(sep + suffix, StringComparison.OrdinalIgnoreCase);
     }
 }
